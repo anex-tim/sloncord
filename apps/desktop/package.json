@@ -1,7 +1,7 @@
 {
   "name": "@sloncord/desktop",
   "private": true,
-  "version": "3.1.8",
+  "version": "3.1.9",
   "description": "Sloncord desktop",
   "author": "Sloncord",
   "main": "dist-electron/main.cjs",

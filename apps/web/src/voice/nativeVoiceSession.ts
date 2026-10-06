@@ -148,7 +148,9 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
   }
 
   async function refreshNativeUdp() {
+    if (destroyed) return;
     const creds = await opts.fetchNativeJoin();
+    if (destroyed) return;
     const b = bridge();
     if (!b?.startNativeVoice) throw new Error("Native voice недоступен (нужен Sloncord Desktop).");
     const res = await b.startNativeVoice({

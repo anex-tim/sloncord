@@ -65,6 +65,9 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
       return;
     }
     if (msg.type === "forceLeave" && String(msg.roomId) === String(opts.roomId)) {
+      closedByUs = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
       opts.onForceLeave();
       return;
     }

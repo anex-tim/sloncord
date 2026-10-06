@@ -3660,14 +3660,6 @@ function App() {
   }
 
   useEffect(() => {
-    if (!token) return undefined;
-    return () => {
-      voiceRef.current?.destroy();
-      voiceRef.current = null;
-    };
-  }, [token]);
-
-  useEffect(() => {
     const mq = window.matchMedia("(max-width: 900px)");
     const onChange = () => {
       setIsNarrow(mq.matches);
@@ -5496,18 +5488,28 @@ function App() {
 
   async function destroyVoiceInstanceAsync() {
     const inst = voiceRef.current;
-    voiceRef.current = null;
     if (!inst) return;
     try {
       inst.destroy();
     } catch {
       // ignore
     }
+    if (voiceRef.current === inst) voiceRef.current = null;
     await new Promise((r) => setTimeout(r, 220));
   }
 
   async function connectVoiceToChannel(voiceChannelId, opts) {
     const targetChannelId = String(voiceChannelId || "");
+    if (
+      targetChannelId &&
+      !opts?.forceReconnect &&
+      String(activeVoiceChannelIdRef.current || "") === targetChannelId &&
+      voiceStateRef.current?.connected &&
+      !voiceStateRef.current?.joining &&
+      voiceRef.current
+    ) {
+      return;
+    }
     if (connectVoiceInFlight.current) {
       if (
         targetChannelId &&
@@ -5550,7 +5552,7 @@ function App() {
       const me = profile?.id ? profile : await api("/profile", { method: "GET" });
       setProfile(me);
 
-      const prevVoiceChannelId = String(activeVoiceChannelId || "");
+      const prevVoiceChannelId = String(activeVoiceChannelIdRef.current || "");
       const meIdForPresence = String(me?.id || "");
       setActiveVoiceChannelId(String(voiceChannelId));
       if (meIdForPresence && uiMode === "server") {
@@ -5655,7 +5657,7 @@ function App() {
             if (!voiceRef.current) return;
             setError(`Голос: ${String(msg || "ошибка native UDP")}`);
             try {
-              leaveVoice();
+              leaveVoice({ keepAlerts: true });
             } catch {
               /* ignore */
             }
@@ -5676,7 +5678,7 @@ function App() {
               "Голос отключён: с этим аккаунтом открыт другой Sloncord. Закройте лишние окна/версии и зайдите в канал снова."
             );
             try {
-              leaveVoice();
+              leaveVoice({ keepAlerts: true });
             } catch {
               /* ignore */
             }
@@ -5781,7 +5783,7 @@ function App() {
             "Голос отключён: с этим аккаунтом открыт другой Sloncord. Закройте лишние окна/версии и зайдите в канал снова."
           );
           try {
-            leaveVoice();
+            leaveVoice({ keepAlerts: true });
           } catch {
             /* ignore */
           }
@@ -5840,9 +5842,9 @@ function App() {
     }
   }
 
-  function leaveVoice() {
+  function leaveVoice(opts) {
     voiceJoinGeneration.current += 1;
-    clearAlerts();
+    if (!opts?.keepAlerts) clearAlerts();
     try {
       const leavingChannelId = String(activeVoiceChannelId || "");
       if (leavingChannelId && uiMode === "server") {
@@ -5925,6 +5927,8 @@ function App() {
       return;
     }
     if (String(activeVoiceChannelId) === String(voiceId) && voiceState.connected) {
+      const dt = Date.now() - (lastSelfVoiceConnectAtRef.current || 0);
+      if (dt < 900) return;
       leaveVoice();
       return;
     }
