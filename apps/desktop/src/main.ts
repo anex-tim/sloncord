@@ -769,6 +769,8 @@ async function connectNamedPipeReadStream(pipePath: string, attempts = 50): Prom
 
 type NativeVoiceProc = {
   proc: ReturnType<typeof spawn>;
+  /** Остановлен намеренно (смена канала / destroy) — не слать error в UI. */
+  stopping: boolean;
 };
 
 let nativeVoiceHelper: NativeVoiceProc | null = null;
@@ -783,6 +785,14 @@ function stopNativeVoiceInternal(): void {
   const cur = nativeVoiceHelper;
   nativeVoiceHelper = null;
   if (!cur?.proc) return;
+  cur.stopping = true;
+  try {
+    cur.proc.stdout?.removeAllListeners("data");
+    cur.proc.stderr?.removeAllListeners("data");
+    cur.proc.removeAllListeners("exit");
+  } catch {
+    /* ignore */
+  }
   try {
     cur.proc.stdin?.write(`${JSON.stringify({ cmd: "stop" })}\n`);
   } catch {
@@ -825,8 +835,10 @@ ipcMain.handle(
         return { ok: false, error: `Не найден SloncordNativeVoice: ${helperPath}` };
       }
       const proc = spawn(helperPath, [], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
-      nativeVoiceHelper = { proc };
+      const helper: NativeVoiceProc = { proc, stopping: false };
+      nativeVoiceHelper = helper;
       proc.stdout?.on("data", (chunk: Buffer) => {
+        if (nativeVoiceHelper?.proc !== proc) return;
         const lines = String(chunk || "").split(/\r?\n/);
         for (const line of lines) {
           if (!line.trim()) continue;
@@ -852,6 +864,7 @@ ipcMain.handle(
                 jpegBase64: String(msg.jpegBase64),
               });
             } else if (msg.type === "error") {
+              if (helper.stopping || nativeVoiceHelper?.proc !== proc) return;
               win.webContents.send("sloncord:native-voice-error", String(msg.message || "native_voice_error"));
             }
           } catch {
@@ -867,9 +880,10 @@ ipcMain.handle(
         }
       });
       proc.on("exit", (code, signal) => {
-        if (nativeVoiceHelper?.proc !== proc) return;
-        nativeVoiceHelper = null;
+        if (helper.stopping) return;
+        if (nativeVoiceHelper?.proc === proc) nativeVoiceHelper = null;
         if (code === 0 || signal === "SIGTERM") return;
+        if (nativeVoiceHelper && nativeVoiceHelper.proc !== proc) return;
         try {
           const win = BrowserWindow.getAllWindows()[0];
           win?.webContents.send(

@@ -1,6 +1,19 @@
+import { getApiBase } from "../config/apiBase";
 import { createNativePresenceClient } from "./nativePresenceClient";
 import { deriveNativeSessionId } from "./nativeSessionId";
 import { createVoiceSessionState } from "./voiceSessionState";
+
+function resolveNativeUdpHost(host: string): string {
+  const h = String(host || "").trim();
+  if (h && h !== "127.0.0.1" && h !== "localhost" && h !== "::1") return h;
+  try {
+    const base = getApiBase();
+    if (base) return new URL(base).hostname;
+  } catch {
+    /* ignore */
+  }
+  return h || "127.0.0.1";
+}
 
 export type NativeVoiceJoinCredentials = {
   udpHost: string;
@@ -136,6 +149,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     if (!b?.startNativeVoice) throw new Error("Native voice недоступен (нужен Sloncord Desktop).");
     const res = await b.startNativeVoice({
       ...creds,
+      udpHost: resolveNativeUdpHost(creds.udpHost),
       roomId: opts.roomId,
       userId: String(opts.selfUserId),
       muted,
@@ -273,6 +287,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
         speaking = !!d.speaking;
       }) ?? null;
       unsubError = bridge()?.onNativeVoiceError?.((msg) => {
+        if (destroyed) return;
         const text = String(msg || "native_error");
         voiceFsm.transition("degraded", text);
         opts.onNativeVoiceError?.(text);
@@ -397,10 +412,10 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       }
       presence.stopPing();
       presence.close();
-      void bridge()?.stopNativeVoice?.();
       unsubSpeaking?.();
       unsubError?.();
       unsubRemoteVideo?.();
+      void bridge()?.stopNativeVoice?.();
       unsubSpeaking = null;
       unsubError = null;
       unsubRemoteVideo = null;

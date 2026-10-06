@@ -103,11 +103,8 @@ internal static class Program
                         Emit);
                     runtime.Muted = cfg.TryGetProperty("muted", out var mu) && mu.GetBoolean();
                     runtime.Deafened = cfg.TryGetProperty("deafened", out var de) && de.GetBoolean();
-                    _ = Task.Run(async () =>
-                    {
-                        try { await runtime.StartAsync(); }
-                        catch (Exception ex) { Emit(new { type = "error", message = ex.Message }); }
-                    });
+                    try { await runtime.StartAsync(); }
+                    catch (Exception ex) { Emit(new { type = "error", message = ex.Message }); }
                 }
             }
         }

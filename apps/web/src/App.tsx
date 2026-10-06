@@ -5529,7 +5529,28 @@ function App() {
       setProfile(me);
 
       const prevVoiceChannelId = String(activeVoiceChannelId || "");
+      const meIdForPresence = String(me?.id || "");
       setActiveVoiceChannelId(String(voiceChannelId));
+      if (meIdForPresence && uiMode === "server") {
+        setVoicePresenceByChannelId((prev) => {
+          const key = String(voiceChannelId);
+          const prevEntry = prev[key] || {};
+          const prevIds = (prevEntry.userIds || []).map((x) => String(x)).filter(Boolean);
+          const userIds = prevIds.includes(meIdForPresence)
+            ? prevIds
+            : [...prevIds, meIdForPresence];
+          return {
+            ...prev,
+            [key]: {
+              ...prevEntry,
+              channelId: key,
+              userIds,
+              startedAtUtc:
+                userIds.length > 0 ? prevEntry.startedAtUtc || new Date().toISOString() : "",
+            },
+          };
+        });
+      }
       voiceNamesFetched.current.clear();
       setVoicePeerNames({});
 
@@ -5709,7 +5730,16 @@ function App() {
           }
         },
         onForceLeave: () => {
-          try { leaveVoice(); } catch { /* ignore */ }
+          if (joinGen !== voiceJoinGeneration.current) return;
+          if (!voiceRef.current) return;
+          setError(
+            "Голос отключён: с этим аккаунтом открыт другой Sloncord. Закройте лишние окна/версии и зайдите в канал снова."
+          );
+          try {
+            leaveVoice();
+          } catch {
+            /* ignore */
+          }
         },
         onVoiceMove: (channelId) => {
           try {

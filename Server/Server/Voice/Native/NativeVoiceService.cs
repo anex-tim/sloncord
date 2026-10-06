@@ -48,6 +48,13 @@ internal sealed class NativeVoiceService
             ?? _configuration["SLONCORD_VOICE_NATIVE_PUBLIC_HOST"]
             ?? Environment.GetEnvironmentVariable("SLONCORD_VOICE_NATIVE_PUBLIC_HOST");
         if (!string.IsNullOrWhiteSpace(fromCfg)) return fromCfg.Trim();
+        var origin =
+            _configuration["SLONCORD_PUBLIC_ORIGIN"]
+            ?? _configuration["Sloncord:PublicOrigin"];
+        if (!string.IsNullOrWhiteSpace(origin)
+            && Uri.TryCreate(origin.Trim(), UriKind.Absolute, out var originUri)
+            && !string.IsNullOrWhiteSpace(originUri.Host))
+            return originUri.Host;
         return "127.0.0.1";
     }
 
