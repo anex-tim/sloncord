@@ -230,7 +230,13 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     screenUrlByUserId.set(userId, url);
   }
 
+  function publishScreenFlag(enabled: boolean) {
+    setState({ sharingScreen: enabled });
+    sendPresence({ type: "screenShare", roomId: opts.roomId, enabled });
+  }
+
   function stopScreenShareInternal() {
+    const wasSharing = screenSharing;
     screenSharing = false;
     if (screenCaptureTimer) clearInterval(screenCaptureTimer);
     screenCaptureTimer = null;
@@ -242,28 +248,22 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     screenStream = null;
     screenVideoEl = null;
     screenCanvas = null;
-    sendPresence({ type: "screenShare", roomId: opts.roomId, enabled: false });
+    if (wasSharing) publishScreenFlag(false);
   }
 
   async function startScreenShareInternal() {
     const b = bridge();
-    const selection = b?.takeDisplaySelection ? await b.takeDisplaySelection() : null;
-    const videoConstraints: MediaTrackConstraints = selection?.sourceId
-      ? ({
-          mandatory: {
-            chromeMediaSource: "desktop",
-            chromeMediaSourceId: selection.sourceId,
-            maxWidth: 1280,
-            maxHeight: 720,
-            maxFrameRate: 12,
-          },
-        } as MediaTrackConstraints)
-      : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 12 } };
-
+    // Источник выбирает Electron в setDisplayMediaRequestHandler.
+    // chromeMediaSource/mandatory в getDisplayMedia даёт "exact constraints are not supported".
     const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: videoConstraints,
+      video: true,
       audio: false,
     });
+    try {
+      await b?.takeDisplaySelection?.();
+    } catch {
+      /* ignore */
+    }
     screenStream = stream;
     screenSharing = true;
     screenVideoEl = document.createElement("video");
@@ -272,7 +272,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     screenVideoEl.srcObject = stream;
     await screenVideoEl.play().catch(() => {});
     screenCanvas = document.createElement("canvas");
-    sendPresence({ type: "screenShare", roomId: opts.roomId, enabled: true });
+    publishScreenFlag(true);
 
     stream.getVideoTracks?.()?.[0]?.addEventListener?.("ended", () => {
       stopScreenShareInternal();
@@ -358,6 +358,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       try {
         await startScreenShareInternal();
       } catch (e) {
+        stopScreenShareInternal();
         const msg = (e && typeof e === "object" && "message" in e && (e as Error).message) || String(e);
         opts.onScreenAudioError?.(msg);
         throw e;
