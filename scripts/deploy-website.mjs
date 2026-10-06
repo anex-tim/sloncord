@@ -17,8 +17,9 @@
  * в цепочке `build:installer` / `build:dir`. Скрипт deploy-sloncord.cmd в корне только
  * вызывает `npm run deploy` после npm install.
  *
- * Полный деплой (без --desktop-only) после desktop также собирает apps/moderation
- * (Sloncord-Moderation-Setup-x64.exe → apps/web/public/downloads и dist/downloads).
+ * По умолчанию (без --with-clients): только `npm run build:web`, без Electron/NSIS;
+ * `apps/web/dist/downloads` очищается перед заливкой (клиент — GitHub Releases).
+ * С --with-clients: полная сборка desktop + moderation и заливка downloads/ на VPS (legacy).
  *
  * Полный деплой (без --desktop-only) после заливки wwwroot по умолчанию выгружает **Sfu/** на сервер
  * (remoteSfuRoot, см. конфиг), затем при необходимости `npm install --omit=dev` в каталоге SFU и
@@ -167,6 +168,12 @@ function isDownloadsInstallerExe(rel) {
 function isClientDownloadArtifact(rel) {
   const p = String(rel).replace(/\\/g, "/");
   return p.startsWith("downloads/") && p !== "downloads/.gitkeep";
+}
+
+/** То же для путей внутри `dotnet publish` (wwwroot/downloads/…). */
+function isApiPublishClientDownload(rel) {
+  const p = String(rel).replace(/\\/g, "/");
+  return p.startsWith("wwwroot/downloads/") && p !== "wwwroot/downloads/.gitkeep";
 }
 
 /**
@@ -1109,10 +1116,11 @@ function runDotnetPublishServer() {
  * @param {import('ssh2').ConnectConfig} common
  * @param {string} localPublishDir
  * @param {string} remoteAppRoot
- * @param {{ forceAll?: boolean }} [opts]
+ * @param {{ forceAll?: boolean; skipClientDownloads?: boolean }} [opts]
  */
 async function sftpUploadServerPublishIncremental(common, localPublishDir, remoteAppRoot, opts = {}) {
   const forceAll = opts.forceAll === true;
+  const skipClientDownloads = opts.skipClientDownloads === true && !forceAll;
   const files = [];
   collectLocalFiles(localPublishDir, localPublishDir, files);
   /** Не затираем production-конфиг на сервере шаблоном из publish. */
@@ -1121,12 +1129,23 @@ async function sftpUploadServerPublishIncremental(common, localPublishDir, remot
     "appsettings.Development.json",
     "appsettings.Production.json",
   ]);
-  const filtered = files.filter((f) => !apiConfigSkip.has(f.rel.replace(/\\/g, "/")));
+  let filtered = files.filter((f) => !apiConfigSkip.has(f.rel.replace(/\\/g, "/")));
   if (files.length !== filtered.length) {
     // eslint-disable-next-line no-console
     console.log(
       `→ API: appsettings*.json не заливаются (${files.length - filtered.length} файл(ов)) — конфиг остаётся на сервере.\n`
     );
+  }
+  if (skipClientDownloads) {
+    const before = filtered.length;
+    filtered = filtered.filter((f) => !isApiPublishClientDownload(f.rel));
+    const n = before - filtered.length;
+    if (n > 0) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `→ API: wwwroot/downloads/* не заливаются (${n} файл(ов)) — установщики на GitHub Releases.\n`
+      );
+    }
   }
   if (filtered.length === 0) {
     // eslint-disable-next-line no-console
@@ -1206,7 +1225,7 @@ async function sftpUploadServerPublishIncremental(common, localPublishDir, remot
 /**
  * @param {Record<string, unknown>} config
  * @param {import('ssh2').ConnectConfig} common
- * @param {{ forceAll?: boolean }} [opts]
+ * @param {{ forceAll?: boolean; skipClientDownloads?: boolean }} [opts]
  */
 async function maybeDeployApi(config, common, opts = {}) {
   if (
@@ -1239,6 +1258,7 @@ async function maybeDeployApi(config, common, opts = {}) {
   const publishDir = runDotnetPublishServer();
   await sftpUploadServerPublishIncremental(common, publishDir, remoteAppRoot, {
     forceAll: opts.forceAll === true,
+    skipClientDownloads: opts.skipClientDownloads === true,
   });
 
   if (config.setupSystemdOnDeploy !== false) {
@@ -1292,7 +1312,22 @@ async function sftpUploadIncremental(common, localDir, remoteWwwroot, opts = {})
     sizeByRel[f.rel] = f.size;
   }
 
-  if (skipInstaller) {
+  if (skipClientDownloads) {
+    /** @type {string[]} */
+    const skippedClient = [];
+    queue = queue.filter((e) => {
+      if (!isClientDownloadArtifact(e.rel)) return true;
+      skippedClient.push(e.rel);
+      if (prev[e.rel] !== undefined) record[e.rel] = prev[e.rel];
+      return false;
+    });
+    if (skippedClient.length) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `→ SFTP: downloads/* не заливаются (клиент на GitHub): ${skippedClient.join(", ")}\n`
+      );
+    }
+  } else if (skipInstaller) {
     /** @type {string[]} */
     const skippedExe = [];
     const next = queue.filter((e) => {
@@ -1619,6 +1654,24 @@ function tryRsyncDelete(config, localDir, remoteWwwroot, keyPath) {
   return r.status === 0;
 }
 
+function runBuildWebOnly() {
+  // eslint-disable-next-line no-console
+  console.log("→ Сборка: только веб (vite) — без Electron/NSIS; клиент на GitHub Releases…\n");
+  const r = spawnSync("npm", ["run", "build:web"], { cwd: root, stdio: "inherit", shell: true });
+  if (r.status !== 0) {
+    process.exit(r.status ?? 1);
+  }
+}
+
+function runStripClientDownloadsFromDist() {
+  const stripScript = path.join(root, "scripts", "strip-client-downloads-from-dist.mjs");
+  if (!existsSync(stripScript)) return;
+  const r = spawnSync(process.execPath, [stripScript], { cwd: root, stdio: "inherit" });
+  if (r.status !== 0) {
+    process.exit(r.status ?? 1);
+  }
+}
+
 function runBuildDesktop() {
   // eslint-disable-next-line no-console
   console.log("→ Сборка: desktop (включает web, .exe, повторный vite)…\n");
@@ -1676,12 +1729,17 @@ async function main() {
   if (!passwordMode) {
     keyPath = resolveSshKeyPath(config);
   }
+  const clientOnGithub = backendOnly;
+
   if (!noBuild) {
     if (desktopOnly) {
       runBuildInstallerForDeploy();
-    } else {
+    } else if (withClients) {
       runBuildDesktop();
       runBuildModeration();
+    } else {
+      runBuildWebOnly();
+      runStripClientDownloadsFromDist();
     }
   } else if (desktopOnly) {
     // eslint-disable-next-line no-console
@@ -1697,6 +1755,9 @@ async function main() {
   } else {
     // eslint-disable-next-line no-console
     console.log("→ --no-build: заливаю уже собранный apps/web/dist\n");
+    if (clientOnGithub) {
+      runStripClientDownloadsFromDist();
+    }
   }
   const localDir = path.join(root, "apps", "web", "dist");
   if (!existsSync(path.join(localDir, "index.html"))) {
@@ -1765,7 +1826,8 @@ async function main() {
     } else {
       await sftpUploadIncremental(common, localDir, remoteWwwroot, {
         forceAll: wipe,
-        skipInstaller: shouldSkipInstallerDeploy(config),
+        skipInstaller: shouldSkipInstallerDeploy(config) || clientOnGithub,
+        skipClientDownloads: clientOnGithub,
       });
     }
   }
@@ -1781,7 +1843,10 @@ async function main() {
       );
     }
     try {
-      await maybeDeployApi(config, common, { forceAll: fullSftp });
+      await maybeDeployApi(config, common, {
+        forceAll: fullSftp,
+        skipClientDownloads: clientOnGithub,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (config.deployApi === true) {
@@ -1821,18 +1886,20 @@ async function main() {
         );
       }
       try {
+        /** @type {string[]} */
+        const shParts = ["set -e"];
         if (config.deployApi === true) {
-          // Старый dotnet без systemd (ручной запуск / неудачный restart) может держать :5000 —
-          // тогда systemctl restart поднимает второй процесс, а запросы идут в устаревший API (405).
-          await execSshCommand(common, "fuser -k 5000/tcp 2>/dev/null || true");
+          // Старый dotnet без systemd может держать :5000 — иначе restart поднимет второй процесс (405).
+          shParts.push("fuser -k 5000/tcp 2>/dev/null || true");
         }
-        await execSshCommand(common, post);
+        shParts.push(post);
         if (config.deployApi === true && config.setupSystemdOnDeploy !== false) {
           const svc = resolveApiServiceName(config);
           // eslint-disable-next-line no-console
           console.log(`→ post: проверка systemctl is-active ${svc}.service…\n`);
-          await execSshCommand(common, `systemctl is-active --quiet ${svc}.service`);
+          shParts.push(`systemctl is-active --quiet ${svc}.service`);
         }
+        await execSshCommand(common, shParts.join("\n"));
       } catch (e) {
         const msg = e?.message || String(e);
         // eslint-disable-next-line no-console
@@ -1854,10 +1921,15 @@ async function main() {
       "\nГотово (только десктоп-артефакты). Каталог /downloads/ на сервере обновлён; служба и статические файлы " +
         "сайта не перезапускались и не очищались."
     );
+  } else if (withClients) {
+    // eslint-disable-next-line no-console
+    console.log(
+      "\nГотово (--with-clients). Ctrl+F5. Установщики: /downloads/Sloncord-Setup-x64.exe и moderation .exe на VPS."
+    );
   } else {
     // eslint-disable-next-line no-console
     console.log(
-      "\nГотово. Откройте сайт в браузере (лучше Ctrl+F5). .exe: /downloads/Sloncord-Setup-x64.exe и /downloads/Sloncord-Moderation-Setup-x64.exe"
+      "\nГотово (backend + веб). Ctrl+F5. Windows-клиент — GitHub Releases; на VPS downloads/ не обновлялись."
     );
   }
 }

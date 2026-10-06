@@ -31,12 +31,14 @@
 
 ## Деплой бэкенда (VPS)
 
-Только API + веб без `.exe`:
+По умолчанию `npm run deploy` собирает **только веб** (`build:web`), очищает `dist/downloads` и **не заливает** установщики на сервер (кнопка «Скачать .exe» и обновления десктопа — GitHub).
 
 ```bash
 npm run deploy
 npm run deploy:upload   # без пересборки
 ```
+
+Legacy: залить `.exe` на VPS — `npm run deploy:with-clients` или `npm run deploy:desktop`.
 
 Старый режим (сборка desktop/moderation и заливка на сервер):
 
