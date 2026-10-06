@@ -68,17 +68,24 @@ const viewOk = spawnSync("gh", ["release", "view", tag, "--repo", repo], {
   shell: true,
 });
 if (viewOk.status !== 0) {
-  run("gh", [
-    "release",
-    "create",
-    tag,
-    "--repo",
-    repo,
-    "--title",
-    `Sloncord ${version}`,
-    "--notes",
-    `Windows installer (${SLONCORD_DESKTOP_INSTALLER_NAME}).`,
-  ]);
+  const create = spawnSync(
+    "gh",
+    [
+      "release",
+      "create",
+      tag,
+      "--repo",
+      repo,
+      "--target",
+      "main",
+      "--title",
+      `Sloncord ${version}`,
+      "--notes",
+      `Windows installer (${SLONCORD_DESKTOP_INSTALLER_NAME}).`,
+    ],
+    { cwd: root, stdio: "inherit", shell: true }
+  );
+  if (create.status !== 0) process.exit(create.status ?? 1);
 } else {
   console.log(`Релиз ${tag} уже существует — загружаю asset заново.`);
 }
