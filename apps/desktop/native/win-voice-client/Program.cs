@@ -91,6 +91,22 @@ internal static class Program
             continue;
         }
 
+        if (cmd == "mixScreenPcm" && runtime is not null)
+        {
+            var b64 = doc.RootElement.TryGetProperty("pcmBase64", out var pEl) ? pEl.GetString() : null;
+            if (!string.IsNullOrWhiteSpace(b64))
+            {
+                try { runtime.PushScreenStereo(Convert.FromBase64String(b64)); } catch { /* ignore */ }
+            }
+            continue;
+        }
+
+        if (cmd == "clearScreenPcm" && runtime is not null)
+        {
+            runtime.ClearScreenPcm();
+            continue;
+        }
+
         if (cmd == "start")
                 {
                     if (runtime is not null) await runtime.StopAsync();
@@ -133,6 +149,8 @@ internal sealed class VoiceRuntime
     private uint _seq;
     private readonly object _sync = new();
     private readonly List<short> _pcmQueue = new(4096);
+    private readonly List<short> _screenMono = new(8192);
+    private readonly object _screenLock = new();
     private readonly Dictionary<string, (byte Total, Dictionary<byte, byte[]> Parts, DateTime At)> _videoFrags = new();
 
     public bool Muted { get; set; }
@@ -193,18 +211,65 @@ internal sealed class VoiceRuntime
         await _udp.SendAsync(packet, packet.Length, _remote);
     }
 
+    /// <summary>s16le stereo (обычно 48 kHz с WASAPI process-loopback) → моно в очередь микса.</summary>
+    public void PushScreenStereo(byte[] pcm)
+    {
+        if (pcm.Length < 4) return;
+        var frames = pcm.Length / 4;
+        lock (_screenLock)
+        {
+            for (var i = 0; i < frames; i++)
+            {
+                var l = BitConverter.ToInt16(pcm, i * 4);
+                var r = BitConverter.ToInt16(pcm, i * 4 + 2);
+                _screenMono.Add((short)((l + r) / 2));
+            }
+            const int cap = 48000;
+            if (_screenMono.Count > cap)
+                _screenMono.RemoveRange(0, _screenMono.Count - cap);
+        }
+    }
+
+    public void ClearScreenPcm()
+    {
+        lock (_screenLock) _screenMono.Clear();
+    }
+
+    private void PullScreen(short[] dst)
+    {
+        lock (_screenLock)
+        {
+            var n = Math.Min(dst.Length, _screenMono.Count);
+            for (var i = 0; i < n; i++) dst[i] = _screenMono[i];
+            if (n > 0) _screenMono.RemoveRange(0, n);
+            for (var i = n; i < dst.Length; i++) dst[i] = 0;
+        }
+    }
+
     private void OnCapture(byte[] buffer, int count)
     {
-        if (Muted || _encoder is null || _udp is null || _remote is null) return;
+        if (_encoder is null || _udp is null || _remote is null) return;
         var samples = count / 2;
-        for (var i = 0; i < samples; i++)
-            _pcmQueue.Add(BitConverter.ToInt16(buffer, i * 2));
+        if (samples <= 0) return;
+        var screen = new short[samples];
+        PullScreen(screen);
+        var screenEnergy = 0;
+        for (var i = 0; i < samples; i++) screenEnergy = Math.Max(screenEnergy, Math.Abs(screen[i]));
+        if (Muted && screenEnergy == 0) return;
 
-        var peak = 0;
-        for (var i = Math.Max(0, _pcmQueue.Count - samples); i < _pcmQueue.Count; i++)
-            peak = Math.Max(peak, Math.Abs(_pcmQueue[i]));
-        var level = Math.Min(1.0, peak / 8000.0);
-        _emit(new { type = "speaking", speaking = level > 0.02, level });
+        var micPeak = 0;
+        for (var i = 0; i < samples; i++)
+        {
+            var mic = Muted ? (short)0 : BitConverter.ToInt16(buffer, i * 2);
+            if (!Muted) micPeak = Math.Max(micPeak, Math.Abs(mic));
+            var mixed = mic + screen[i];
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+            _pcmQueue.Add((short)mixed);
+        }
+
+        var level = Math.Min(1.0, micPeak / 8000.0);
+        _emit(new { type = "speaking", speaking = !Muted && level > 0.02, level });
 
         const int frameSize = 960;
         while (_pcmQueue.Count >= frameSize)

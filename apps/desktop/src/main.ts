@@ -987,7 +987,31 @@ ipcMain.handle("sloncord:set-native-voice-deafened", async (_e, deafened: boolea
   }
 });
 
+function forwardScreenPcmToNativeVoice(payload: Buffer): void {
+  const voice = nativeVoiceHelper;
+  if (!voice?.proc?.stdin?.writable || voice.stopping) return;
+  if (payload.length < 4 || payload.length > 256 * 1024) return;
+  try {
+    voice.proc.stdin.write(
+      `${JSON.stringify({ cmd: "mixScreenPcm", pcmBase64: payload.toString("base64") })}\n`
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearNativeVoiceScreenPcm(): void {
+  const voice = nativeVoiceHelper;
+  if (!voice?.proc?.stdin?.writable || voice.stopping) return;
+  try {
+    voice.proc.stdin.write(`${JSON.stringify({ cmd: "clearScreenPcm" })}\n`);
+  } catch {
+    /* ignore */
+  }
+}
+
 function stopNativeScreenAudioInternal(): void {
+  clearNativeVoiceScreenPcm();
   const cur = nativeAudioHelper;
   nativeAudioHelper = null;
   try {
@@ -1048,42 +1072,11 @@ ipcMain.handle(
         captureMode: "exclude-tree" | "dual-subtract" | "subtract-fallback";
         excludeRootPid: number;
       }> {
-        const excludeCandidates = getExcludeRootPidCandidates();
-        for (const excludeRootPid of excludeCandidates) {
-          let started = await spawnScreenAudioHelper("exclude-tree", excludeRootPid);
-          if (!(await helperProcessFailedQuickly(started.proc))) {
-            return { started, captureMode: "exclude-tree", excludeRootPid };
-          }
-          try {
-            started.reader.destroy();
-          } catch {
-            /* ignore */
-          }
-          try {
-            started.proc.kill();
-          } catch {
-            /* ignore */
-          }
-        }
-
-        const excludeRootPid = excludeCandidates[0] ?? process.pid;
-        let started = await spawnScreenAudioHelper("screen-dual", excludeRootPid);
-        if (!(await helperProcessFailedQuickly(started.proc))) {
-          return { started, captureMode: "dual-subtract", excludeRootPid };
-        }
-        try {
-          started.reader.destroy();
-        } catch {
-          /* ignore */
-        }
-        try {
-          started.proc.kill();
-        } catch {
-          /* ignore */
-        }
-
-        started = await spawnScreenAudioHelper("subtract-fallback", excludeRootPid);
-        if (await helperProcessFailedQuickly(started.proc)) {
+        // Только корень Electron: renderer, GPU, utility и SloncordNativeVoice — его дети.
+        // Вычитание полного микса не используем: из-за рассинхрона зритель слышал сам себя.
+        const excludeRootPid = process.pid;
+        const started = await spawnScreenAudioHelper("exclude-tree", excludeRootPid);
+        if (await helperProcessFailedQuickly(started.proc, 1500)) {
           try {
             started.reader.destroy();
           } catch {
@@ -1095,10 +1088,10 @@ ipcMain.handle(
             /* ignore */
           }
           throw new Error(
-            "Не удалось запустить захват системного звука без эха. Обновите Windows 10 (20H1+) или используйте наушники."
+            "Windows не включил захват системного звука без звука Sloncord. Нужна Windows 10 2004 или новее."
           );
         }
-        return { started, captureMode: "subtract-fallback", excludeRootPid };
+        return { started, captureMode: "exclude-tree", excludeRootPid };
       }
 
       let captureMode: "exclude-tree" | "dual-subtract" | "subtract-fallback" = "exclude-tree";
@@ -1147,6 +1140,7 @@ ipcMain.handle(
           if (cur.leftover.length < 4 + len) return;
           const payload = cur.leftover.subarray(4, 4 + len);
           cur.leftover = cur.leftover.subarray(4 + len);
+          forwardScreenPcmToNativeVoice(payload);
 
           if (mainWindow && !mainWindow.isDestroyed()) {
             if (inflight > MAX_INFLIGHT) {

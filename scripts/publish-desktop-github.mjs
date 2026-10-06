@@ -50,6 +50,9 @@ const tag = version.startsWith("v") ? version : `v${version}`;
 const releasesDir = path.join(root, "releases");
 const manifestPath = path.join(releasesDir, "desktop-release.json");
 const st = readFileSync(installerPath);
+// Контракт обновления старых клиентов не менять:
+// asset ровно Sloncord-Setup-x64.exe, тег vX.Y.Z, --latest,
+// releases/desktop-release.json: version, available, fileName, downloadUrl, size, githubRepo.
 const meta = {
   version,
   available: true,
@@ -61,41 +64,50 @@ const meta = {
 };
 writeFileSync(manifestPath, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
 
-console.log(`→ GitHub Release ${tag} (${repo})…`);
-const viewOk = spawnSync("gh", ["release", "view", tag, "--repo", repo], {
-  cwd: root,
-  stdio: "pipe",
-  shell: true,
-});
-if (viewOk.status !== 0) {
-  const create = spawnSync(
-    "gh",
-    [
-      "release",
-      "create",
-      tag,
-      "--repo",
-      repo,
-      "--target",
-      "main",
-      "--title",
-      `Sloncord ${version}`,
-      "--notes",
-      `Windows installer (${SLONCORD_DESKTOP_INSTALLER_NAME}).`,
-    ],
-    { cwd: root, stdio: "inherit", shell: true }
-  );
-  if (create.status !== 0) process.exit(create.status ?? 1);
-} else {
-  console.log(`Релиз ${tag} уже существует — загружаю asset заново.`);
+function resolveGhBin() {
+  if (process.platform !== "win32") return "gh";
+  const found = spawnSync("where.exe", ["gh"], { encoding: "utf8", shell: false });
+  const lines = String(found.stdout || "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return lines.find((p) => p.toLowerCase().endsWith("gh.exe")) || lines[0] || "gh";
 }
 
-const upload = spawnSync(
-  "gh",
-  ["release", "upload", tag, installerPath, "--repo", repo, "--clobber"],
-  { cwd: root, stdio: "inherit", shell: true }
-);
-if (upload.status !== 0) process.exit(upload.status ?? 1);
+const ghBin = resolveGhBin();
+
+function gh(args) {
+  const r = spawnSync(ghBin, args, { cwd: root, stdio: "inherit", shell: false });
+  if ((r.status ?? 1) !== 0) process.exit(r.status ?? 1);
+}
+
+console.log(`→ GitHub Release ${tag} (${repo})…`);
+const viewOk = spawnSync(ghBin, ["release", "view", tag, "--repo", repo], {
+  cwd: root,
+  stdio: "ignore",
+  shell: false,
+});
+if (viewOk.status !== 0) {
+  gh([
+    "release",
+    "create",
+    tag,
+    "--repo",
+    repo,
+    "--target",
+    "main",
+    "--latest",
+    "--title",
+    `Sloncord ${version}`,
+    "--notes",
+    `Windows installer (${SLONCORD_DESKTOP_INSTALLER_NAME}).`,
+  ]);
+} else {
+  console.log(`Релиз ${tag} уже существует — помечаю latest и загружаю asset заново.`);
+  gh(["release", "edit", tag, "--repo", repo, "--latest"]);
+}
+
+gh(["release", "upload", tag, installerPath, "--repo", repo, "--clobber"]);
 
 console.log(`\nГотово: https://github.com/${repo}/releases/tag/${tag}`);
 console.log("Не забудьте закоммитить releases/desktop-release.json и запушить в main.");

@@ -47,6 +47,10 @@ type SloncordNativeVoiceBridge = {
   onNativeRemoteVideo?: (cb: (detail: { sessionId: number; jpegBase64: string }) => void) => () => void;
   onNativeVoiceError?: (cb: (msg: string) => void) => () => void;
   takeDisplaySelection?: () => Promise<{ tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null>;
+  startNativeScreenAudio?: (
+    selection?: { tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null
+  ) => Promise<{ ok: boolean; error?: string }>;
+  stopNativeScreenAudio?: () => Promise<{ ok: boolean }>;
 };
 
 function bridge(): SloncordNativeVoiceBridge | null {
@@ -238,6 +242,11 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
   function stopScreenShareInternal() {
     const wasSharing = screenSharing;
     screenSharing = false;
+    try {
+      void bridge()?.stopNativeScreenAudio?.();
+    } catch {
+      /* ignore */
+    }
     if (screenCaptureTimer) clearInterval(screenCaptureTimer);
     screenCaptureTimer = null;
     try {
@@ -257,12 +266,26 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     // chromeMediaSource/mandatory в getDisplayMedia даёт "exact constraints are not supported".
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
-      audio: false,
+      audio: true,
     });
     try {
-      await b?.takeDisplaySelection?.();
+      stream.getAudioTracks?.().forEach((t) => t.stop());
     } catch {
-      /* ignore */
+      /* Chromium loopback includes Sloncord; system audio comes from WASAPI exclude. */
+    }
+    let selection: { tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null = null;
+    try {
+      selection = (await b?.takeDisplaySelection?.()) ?? null;
+    } catch {
+      selection = null;
+    }
+    if (selection?.withSystemAudio) {
+      const audioRes = await b?.startNativeScreenAudio?.(selection);
+      if (!audioRes?.ok) {
+        opts.onScreenAudioError?.(
+          audioRes?.error || "Системный звук демонстрации не запустился. Видео идёт без звука."
+        );
+      }
     }
     screenStream = stream;
     screenSharing = true;

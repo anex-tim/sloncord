@@ -1,7 +1,7 @@
 {
   "name": "@sloncord/desktop",
   "private": true,
-  "version": "3.1.11",
+  "version": "3.1.12",
   "description": "Sloncord desktop",
   "author": "Sloncord",
   "main": "dist-electron/main.cjs",
@@ -18,7 +18,7 @@
     "clean:release": "node ./scripts/clean-release.mjs",
     "clean:electron-cache": "node ./scripts/clean-electron-builder-cache.mjs",
     "copy-downloads-to-web-dist": "node ./scripts/copy-downloads-to-web-dist.mjs",
-    "build:installer": "npm run prebuild && npm run copy-web && npm run compile && node ./scripts/electron-builder-win.mjs --win && node scripts/publish-to-web.mjs && node ./scripts/copy-downloads-to-web-dist.mjs",
+    "build:installer": "npm run build --prefix ../../apps/web && npm run prebuild && npm run copy-web && npm run compile && node ./scripts/electron-builder-win.mjs --win && node scripts/publish-to-web.mjs && node ./scripts/copy-downloads-to-web-dist.mjs",
     "build": "npm run build --prefix ../../apps/web && npm run copy-web && npm run compile && node ./scripts/electron-builder-win.mjs --win && node scripts/publish-to-web.mjs && npm run build --prefix ../../apps/web",
     "build:with-clean-cache": "npm run clean:electron-cache && npm run build",
     "build:dir": "npm run prebuild && npm run build --prefix ../../apps/web && npm run copy-web && npm run compile && node ./scripts/electron-builder-win.mjs --win --dir",
