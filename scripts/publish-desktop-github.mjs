@@ -90,15 +90,12 @@ if (viewOk.status !== 0) {
   console.log(`Релиз ${tag} уже существует — загружаю asset заново.`);
 }
 
-run("gh", [
-  "release",
-  "upload",
-  tag,
-  installerPath,
-  "--repo",
-  repo,
-  "--clobber",
-]);
+const upload = spawnSync(
+  "gh",
+  ["release", "upload", tag, installerPath, "--repo", repo, "--clobber"],
+  { cwd: root, stdio: "inherit", shell: true }
+);
+if (upload.status !== 0) process.exit(upload.status ?? 1);
 
 console.log(`\nГотово: https://github.com/${repo}/releases/tag/${tag}`);
 console.log("Не забудьте закоммитить releases/desktop-release.json и запушить в main.");
