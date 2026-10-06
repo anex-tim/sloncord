@@ -30,6 +30,7 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
   /** Closing socket to open a new one — ignore onclose (avoid reconnect storm). */
   let replacingSocket = false;
   let closedByUs = false;
+  let connectPromise: Promise<void> | null = null;
 
   function send(obj: Record<string, unknown>) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -77,8 +78,10 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
   }
 
   function connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    if (connectPromise) return connectPromise;
+    connectPromise = new Promise((resolve, reject) => {
       if (opts.isDestroyed()) {
+        connectPromise = null;
         reject(new Error("destroyed"));
         return;
       }
@@ -92,26 +95,42 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
         /* ignore */
       }
 
+      let settled = false;
+      const finishOk = () => {
+        if (settled) return;
+        settled = true;
+        connectPromise = null;
+        resolve();
+      };
+      const finishErr = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        connectPromise = null;
+        reject(err);
+      };
+
       socket.onopen = () => {
         if (ws !== socket) return;
         replacingSocket = false;
         send({ type: "joinRoom", roomId: opts.roomId, mode: "native" });
-        resolve();
+        finishOk();
       };
       socket.onerror = () => {
         if (ws !== socket) return;
         replacingSocket = false;
-        reject(new Error("voice_ws_error"));
+        finishErr(new Error("voice_ws_error"));
       };
       socket.onclose = (ev) => {
         // Ignore stale sockets superseded by a newer connect() (server closes them with "replaced").
         if (socket !== ws) return;
         if (replacingSocket || closedByUs || opts.isDestroyed()) {
           replacingSocket = false;
+          if (!settled) finishErr(new Error("voice_ws_closed"));
           return;
         }
+        if (!settled) finishErr(new Error("voice_ws_closed"));
         if (ev.code === 1000 && String(ev.reason || "").toLowerCase() === "replaced") {
-          if (!opts.isDestroyed()) opts.onForceLeave();
+          scheduleReconnect();
           return;
         }
         scheduleReconnect();
@@ -125,10 +144,12 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
         }
       };
     });
+    return connectPromise;
   }
 
   function close() {
     closedByUs = true;
+    connectPromise = null;
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = null;
     stopPing();

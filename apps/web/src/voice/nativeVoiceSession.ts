@@ -71,6 +71,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
   let unsubSpeaking: (() => void) | null = null;
   let unsubError: (() => void) | null = null;
   let unsubRemoteVideo: (() => void) | null = null;
+  let lastNativeUdpRefreshAt = 0;
   let screenSharing = false;
   let screenStream: MediaStream | null = null;
   let screenCaptureTimer: ReturnType<typeof setInterval> | null = null;
@@ -111,7 +112,10 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       setState({ mediaLinkReady: true });
     },
     onReconnectSuccess: () => {
-      void refreshNativeUdp();
+      if (destroyed) return;
+      const now = Date.now();
+      if (now - lastNativeUdpRefreshAt < 4000) return;
+      void refreshNativeUdp().catch(() => {});
     },
     onRoomRoster: (msg) => {
       const ids = Array.isArray(msg.userIds) ? msg.userIds.map((x) => String(x)) : [];
@@ -156,6 +160,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       deafened,
     });
     if (!res.ok) throw new Error(res.error || "native_voice_start_failed");
+    lastNativeUdpRefreshAt = Date.now();
   }
 
   function applyMuteDeafen() {

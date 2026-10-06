@@ -2993,6 +2993,19 @@ function App() {
 
   const prevVoiceConnectedRef = useRef(false);
   useEffect(() => {
+    const connected = !!voiceState.connected && !voiceState.joining;
+    if (connected && activeVoiceChannelId) {
+      setStatus("В голосовом канале (native UDP).");
+    } else if (!voiceState.connected && !voiceState.joining) {
+      setStatus((s) => {
+        const t = String(s || "");
+        if (t.includes("голосовом канале") || t.includes("native UDP")) return "";
+        return s;
+      });
+    }
+  }, [voiceState.connected, voiceState.joining, activeVoiceChannelId]);
+
+  useEffect(() => {
     const was = prevVoiceConnectedRef.current;
     const now = !!voiceState.connected && !voiceState.joining;
     prevVoiceConnectedRef.current = now;
@@ -5493,8 +5506,16 @@ function App() {
   }
 
   async function connectVoiceToChannel(voiceChannelId, opts) {
+    const targetChannelId = String(voiceChannelId || "");
     if (connectVoiceInFlight.current) {
-      pendingVoiceChannelId.current = String(voiceChannelId || "");
+      if (
+        targetChannelId &&
+        (targetChannelId === String(activeVoiceChannelIdRef.current || "") ||
+          targetChannelId === String(pendingVoiceChannelId.current || ""))
+      ) {
+        return;
+      }
+      pendingVoiceChannelId.current = targetChannelId;
       return;
     }
     clearAlerts();
@@ -5622,6 +5643,8 @@ function App() {
             }
           },
           onNativeVoiceError: (msg) => {
+            if (joinGen !== voiceJoinGeneration.current) return;
+            if (!voiceRef.current) return;
             setError(`Голос: ${String(msg || "ошибка native UDP")}`);
             try {
               leaveVoice();
@@ -5667,7 +5690,6 @@ function App() {
         } catch {
           // ignore
         }
-        setStatus("В голосовом канале (native UDP).");
         return;
       }
 
@@ -5779,9 +5801,15 @@ function App() {
     } finally {
       connectVoiceInFlight.current = false;
       const pending = pendingVoiceChannelId.current;
+      pendingVoiceChannelId.current = null;
       if (pending) {
-        pendingVoiceChannelId.current = null;
-        void connectVoiceToChannel(pending, { suppressJoinSfx: true }).catch(() => {});
+        const alreadyOnChannel =
+          pending === targetChannelId &&
+          String(activeVoiceChannelIdRef.current || "") === pending &&
+          (voiceStateRef.current?.connected || voiceStateRef.current?.joining);
+        if (!alreadyOnChannel) {
+          void connectVoiceToChannel(pending, { suppressJoinSfx: true }).catch(() => {});
+        }
       }
     }
   }
@@ -5873,11 +5901,6 @@ function App() {
     if (String(activeVoiceChannelId) === String(voiceId) && voiceState.connected) {
       leaveVoice();
       return;
-    }
-    try {
-      selectTextChannel(String(voiceId));
-    } catch {
-      /* ignore */
     }
     await connectVoiceToChannel(voiceId);
   }
