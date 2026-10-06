@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchDesktopReleaseFromGithub } from "./config/desktopGithubRelease";
+import {
+  fetchDesktopReleaseFromGithub,
+  pickNewestDesktopRelease,
+  type DesktopReleaseMeta,
+} from "./config/desktopGithubRelease";
 
 type DesktopReleaseMeta = {
   version?: string;
@@ -92,10 +96,22 @@ export function ElectronTitleBar() {
     async function fetchDesktopRelease(signal: AbortSignal): Promise<void> {
       if (cancelled) return;
       try {
-        let data = await fetchDesktopReleaseFromGithub(signal);
-        if (!data && window.sloncord?.fetchDesktopReleaseFromMain) {
-          data = (await window.sloncord.fetchDesktopReleaseFromMain()) as typeof data;
+        const candidates: DesktopReleaseMeta[] = [];
+        if (window.sloncord?.fetchDesktopReleaseFromMain) {
+          try {
+            const fromMain = (await window.sloncord.fetchDesktopReleaseFromMain()) as DesktopReleaseMeta | null;
+            if (fromMain?.version && fromMain?.downloadUrl) candidates.push(fromMain);
+          } catch {
+            /* ignore */
+          }
         }
+        try {
+          const fromRenderer = await fetchDesktopReleaseFromGithub(signal);
+          if (fromRenderer?.version && fromRenderer?.downloadUrl) candidates.push(fromRenderer);
+        } catch {
+          /* ignore */
+        }
+        const data = pickNewestDesktopRelease(candidates);
         if (cancelled || !data) return;
         const rv = String(data?.version ?? "").trim();
         const du = String(data?.downloadUrl ?? "").trim();

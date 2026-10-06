@@ -866,8 +866,19 @@ ipcMain.handle(
           /* ignore */
         }
       });
-      proc.on("exit", () => {
-        if (nativeVoiceHelper?.proc === proc) nativeVoiceHelper = null;
+      proc.on("exit", (code, signal) => {
+        if (nativeVoiceHelper?.proc !== proc) return;
+        nativeVoiceHelper = null;
+        if (code === 0 || signal === "SIGTERM") return;
+        try {
+          const win = BrowserWindow.getAllWindows()[0];
+          win?.webContents.send(
+            "sloncord:native-voice-error",
+            `SloncordNativeVoice завершился (code=${code ?? "?"})`
+          );
+        } catch {
+          /* ignore */
+        }
       });
       const startLine = `${JSON.stringify({ cmd: "start", ...cfg })}\n`;
       const ready = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
@@ -879,7 +890,10 @@ ipcMain.handle(
           proc.stdout?.off("data", onData);
           resolve(r);
         };
-        const timer = setTimeout(() => finish({ ok: true }), 5000);
+        const timer = setTimeout(
+          () => finish({ ok: false, error: "SloncordNativeVoice: нет ответа ready (таймаут 8 с)" }),
+          8000
+        );
         const onData = (chunk: Buffer) => {
           const lines = String(chunk || "").split(/\r?\n/);
           for (const line of lines) {
@@ -1312,6 +1326,56 @@ ipcMain.handle(
 
 const SLONCORD_GITHUB_REPO_DEFAULT = "anex-tim/sloncord";
 
+const SLONCORD_INSTALLER_ASSET = "sloncord-setup-x64.exe";
+
+function normalizeDesktopVersion(tag: string): string {
+  return String(tag || "")
+    .trim()
+    .replace(/^v/i, "");
+}
+
+function compareDesktopSemver(a: string, b: string): number {
+  const pa = normalizeDesktopVersion(a).split(".").map((x) => parseInt(x, 10));
+  const pb = normalizeDesktopVersion(b).split(".").map((x) => parseInt(x, 10));
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i += 1) {
+    const av = Number.isFinite(pa[i]) ? pa[i]! : 0;
+    const bv = Number.isFinite(pb[i]) ? pb[i]! : 0;
+    if (av > bv) return 1;
+    if (av < bv) return -1;
+  }
+  return 0;
+}
+
+function metaFromGhRelease(data: {
+  tag_name?: string;
+  assets?: { name?: string; browser_download_url?: string; size?: number }[];
+}): { version: string; downloadUrl: string; available: boolean; size?: number } | null {
+  const version = normalizeDesktopVersion(String(data?.tag_name || ""));
+  const asset = (data?.assets || []).find(
+    (a) => String(a?.name || "").toLowerCase() === SLONCORD_INSTALLER_ASSET
+  );
+  const downloadUrl = String(asset?.browser_download_url || "").trim();
+  if (!version || !downloadUrl) return null;
+  return {
+    version,
+    downloadUrl,
+    available: true,
+    size: typeof asset?.size === "number" ? asset.size : undefined,
+  };
+}
+
+function pickNewestDesktopMeta(
+  items: { version: string; downloadUrl: string; available: boolean; size?: number }[]
+): { version: string; downloadUrl: string; available: boolean; size?: number } | null {
+  let best: { version: string; downloadUrl: string; available: boolean; size?: number } | null = null;
+  for (const c of items) {
+    if (!c.version || !c.downloadUrl || c.available === false) continue;
+    if (!best || compareDesktopSemver(c.version, best.version) > 0) best = c;
+  }
+  return best;
+}
+
 async function fetchDesktopReleaseFromMainProcess(): Promise<{
   version: string;
   downloadUrl: string;
@@ -1332,56 +1396,64 @@ async function fetchDesktopReleaseFromMainProcess(): Promise<{
   for (const repo of repos) {
     if (seen.has(repo)) continue;
     seen.add(repo);
+    const candidates: { version: string; downloadUrl: string; available: boolean; size?: number }[] = [];
     try {
       const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
         headers,
         cache: "no-store",
       });
-      if (!res.ok) continue;
-      const data = (await res.json()) as {
-        tag_name?: string;
-        assets?: { name?: string; browser_download_url?: string; size?: number }[];
-      };
-      const version = String(data?.tag_name || "")
-        .trim()
-        .replace(/^v/i, "");
-      const asset = (data?.assets || []).find(
-        (a) => String(a?.name || "").toLowerCase() === "sloncord-setup-x64.exe"
-      );
-      const downloadUrl = String(asset?.browser_download_url || "").trim();
-      if (version && downloadUrl) {
-        return {
-          version,
-          downloadUrl,
-          available: true,
-          size: typeof asset?.size === "number" ? asset.size : undefined,
+      if (res.ok) {
+        const data = (await res.json()) as {
+          tag_name?: string;
+          assets?: { name?: string; browser_download_url?: string; size?: number }[];
         };
+        const m = metaFromGhRelease(data);
+        if (m) candidates.push(m);
       }
     } catch {
-      /* try manifest */
+      /* ignore */
+    }
+    try {
+      const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=30`, {
+        headers,
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const list = (await res.json()) as {
+          tag_name?: string;
+          assets?: { name?: string; browser_download_url?: string; size?: number }[];
+        }[];
+        for (const item of list || []) {
+          const m = metaFromGhRelease(item);
+          if (m) candidates.push(m);
+        }
+      }
+    } catch {
+      /* ignore */
     }
     try {
       const mRes = await fetch(
         `https://raw.githubusercontent.com/${repo}/main/releases/desktop-release.json?t=${Date.now()}`,
         { headers: { "User-Agent": "Sloncord-Desktop" }, cache: "no-store" }
       );
-      if (!mRes.ok) continue;
-      const j = (await mRes.json()) as {
-        version?: string;
-        downloadUrl?: string;
-        available?: boolean;
-        size?: number;
-      };
-      const version = String(j?.version || "")
-        .trim()
-        .replace(/^v/i, "");
-      const downloadUrl = String(j?.downloadUrl || "").trim();
-      if (version && downloadUrl && j?.available !== false) {
-        return { version, downloadUrl, available: true, size: j.size };
+      if (mRes.ok) {
+        const j = (await mRes.json()) as {
+          version?: string;
+          downloadUrl?: string;
+          available?: boolean;
+          size?: number;
+        };
+        const version = normalizeDesktopVersion(String(j?.version || ""));
+        const downloadUrl = String(j?.downloadUrl || "").trim();
+        if (version && downloadUrl && j?.available !== false) {
+          candidates.push({ version, downloadUrl, available: true, size: j.size });
+        }
       }
     } catch {
-      /* next repo */
+      /* ignore */
     }
+    const best = pickNewestDesktopMeta(candidates);
+    if (best) return best;
   }
   return null;
 }
