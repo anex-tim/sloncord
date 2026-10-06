@@ -5844,6 +5844,11 @@ function App() {
       leaveVoice();
       return;
     }
+    try {
+      selectTextChannel(String(voiceId));
+    } catch {
+      /* ignore */
+    }
     await connectVoiceToChannel(voiceId);
   }
 
