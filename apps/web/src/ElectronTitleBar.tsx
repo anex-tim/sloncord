@@ -10,6 +10,8 @@ type DesktopReleaseMeta = {
 
 /** Первый запрос после старта (даёт время preload / сохранённому API base). */
 const DESKTOP_FIRST_POLL_DELAY_MS = 900;
+const DESKTOP_POLL_INTERVAL_MS = 5 * 60 * 1000;
+const DESKTOP_STARTUP_RETRY_DELAYS_MS = [0, 8000, 45000];
 
 /** Без постоянного интервала: проверка по событию (SignalR и т.п.), см. App.tsx. */
 export const DESKTOP_RELEASE_CHECK_EVENT = "sloncord:desktop-release-check";
@@ -90,7 +92,10 @@ export function ElectronTitleBar() {
     async function fetchDesktopRelease(signal: AbortSignal): Promise<void> {
       if (cancelled) return;
       try {
-        const data = await fetchDesktopReleaseFromGithub(signal);
+        let data = await fetchDesktopReleaseFromGithub(signal);
+        if (!data && window.sloncord?.fetchDesktopReleaseFromMain) {
+          data = (await window.sloncord.fetchDesktopReleaseFromMain()) as typeof data;
+        }
         if (cancelled || !data) return;
         const rv = String(data?.version ?? "").trim();
         const du = String(data?.downloadUrl ?? "").trim();
@@ -124,6 +129,12 @@ export function ElectronTitleBar() {
     }
 
     const t0 = window.setTimeout(runOnePoll, DESKTOP_FIRST_POLL_DELAY_MS);
+    const startupRetryTimers: number[] = [];
+    for (const delay of DESKTOP_STARTUP_RETRY_DELAYS_MS) {
+      if (delay <= DESKTOP_FIRST_POLL_DELAY_MS) continue;
+      startupRetryTimers.push(window.setTimeout(runOnePoll, delay));
+    }
+    const intervalId = window.setInterval(runOnePoll, DESKTOP_POLL_INTERVAL_MS);
 
     const onVisible = (): void => {
       if (document.visibilityState !== "visible" || cancelled) return;
@@ -147,6 +158,8 @@ export function ElectronTitleBar() {
       cancelled = true;
       try {
         clearTimeout(t0);
+        clearInterval(intervalId);
+        for (const id of startupRetryTimers) clearTimeout(id);
       } catch {
         /* ignore */
       }

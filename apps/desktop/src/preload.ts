@@ -98,6 +98,12 @@ contextBridge.exposeInMainWorld("sloncord", {
   setWindowFullscreen: (flag: boolean): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("sloncord:set-window-fullscreen", flag),
   getAppVersion: (): Promise<string> => ipcRenderer.invoke("sloncord:get-app-version"),
+  fetchDesktopReleaseFromMain: (): Promise<{
+    version?: string;
+    downloadUrl?: string;
+    available?: boolean;
+    size?: number;
+  } | null> => ipcRenderer.invoke("sloncord:fetch-desktop-release"),
   writeClipboardText: (text: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke("sloncord:write-clipboard-text", text),
   installDesktopUpdate: (installerUrl: string): Promise<{ ok: boolean; error?: string }> =>

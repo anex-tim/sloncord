@@ -1277,6 +1277,84 @@ ipcMain.handle(
   }
 );
 
+const SLONCORD_GITHUB_REPO_DEFAULT = "anex-tim/sloncord";
+
+async function fetchDesktopReleaseFromMainProcess(): Promise<{
+  version: string;
+  downloadUrl: string;
+  available: boolean;
+  size?: number;
+} | null> {
+  const envRepo = String(process.env.SLONCORD_GITHUB_REPO || "")
+    .trim()
+    .replace(/^https?:\/\/github\.com\//i, "")
+    .replace(/\/$/, "");
+  const repos = [envRepo, SLONCORD_GITHUB_REPO_DEFAULT].filter((r) => r.includes("/"));
+  const seen = new Set<string>();
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "Sloncord-Desktop",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  for (const repo of repos) {
+    if (seen.has(repo)) continue;
+    seen.add(repo);
+    try {
+      const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+        headers,
+        cache: "no-store",
+      });
+      if (!res.ok) continue;
+      const data = (await res.json()) as {
+        tag_name?: string;
+        assets?: { name?: string; browser_download_url?: string; size?: number }[];
+      };
+      const version = String(data?.tag_name || "")
+        .trim()
+        .replace(/^v/i, "");
+      const asset = (data?.assets || []).find(
+        (a) => String(a?.name || "").toLowerCase() === "sloncord-setup-x64.exe"
+      );
+      const downloadUrl = String(asset?.browser_download_url || "").trim();
+      if (version && downloadUrl) {
+        return {
+          version,
+          downloadUrl,
+          available: true,
+          size: typeof asset?.size === "number" ? asset.size : undefined,
+        };
+      }
+    } catch {
+      /* try manifest */
+    }
+    try {
+      const mRes = await fetch(
+        `https://raw.githubusercontent.com/${repo}/main/releases/desktop-release.json?t=${Date.now()}`,
+        { headers: { "User-Agent": "Sloncord-Desktop" }, cache: "no-store" }
+      );
+      if (!mRes.ok) continue;
+      const j = (await mRes.json()) as {
+        version?: string;
+        downloadUrl?: string;
+        available?: boolean;
+        size?: number;
+      };
+      const version = String(j?.version || "")
+        .trim()
+        .replace(/^v/i, "");
+      const downloadUrl = String(j?.downloadUrl || "").trim();
+      if (version && downloadUrl && j?.available !== false) {
+        return { version, downloadUrl, available: true, size: j.size };
+      }
+    } catch {
+      /* next repo */
+    }
+  }
+  return null;
+}
+
+ipcMain.handle("sloncord:fetch-desktop-release", () => fetchDesktopReleaseFromMainProcess());
+
 ipcMain.handle("sloncord:get-app-version", () => app.getVersion());
 
 ipcMain.handle("sloncord:set-taskbar-badge", (_event, count: number) => {

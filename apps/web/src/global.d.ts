@@ -28,6 +28,12 @@ declare global {
       /** Резерв, если Element.requestFullscreen не сработал (десктоп). */
       setWindowFullscreen?: (flag: boolean) => Promise<{ ok: boolean }>;
       getAppVersion?: () => Promise<string>;
+      fetchDesktopReleaseFromMain?: () => Promise<{
+        version?: string;
+        downloadUrl?: string;
+        available?: boolean;
+        size?: number;
+      } | null>;
       /** В Electron надёжнее, чем navigator.clipboard на кастомном протоколе. */
       writeClipboardText?: (text: string) => Promise<{ ok: boolean; error?: string }>;
       /** Скачивание с прогрессом, тихая установка NSIS и выход (упакованная Windows-сборка). */

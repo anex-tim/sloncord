@@ -964,6 +964,8 @@ function App() {
   const lastScreenTapRef = useRef({ at: 0, x: 0, y: 0 });
   const voiceRef = useRef(null);
   const connectVoiceInFlight = useRef(false);
+  const pendingVoiceChannelId = useRef(null);
+  const voiceJoinGeneration = useRef(0);
   const channelsRef = useRef([]);
   const serversRef = useRef([]);
   const voiceNamesFetched = useRef(new Set());
@@ -5488,8 +5490,21 @@ function App() {
     voiceRef.current = null;
   }
 
+  async function destroyVoiceInstanceAsync() {
+    const inst = voiceRef.current;
+    voiceRef.current = null;
+    if (!inst) return;
+    try {
+      inst.destroy();
+    } catch {
+      // ignore
+    }
+    await new Promise((r) => setTimeout(r, 220));
+  }
+
   async function connectVoiceToChannel(voiceChannelId, opts) {
     if (connectVoiceInFlight.current) {
+      pendingVoiceChannelId.current = String(voiceChannelId || "");
       return;
     }
     clearAlerts();
@@ -5549,7 +5564,8 @@ function App() {
           });
       }
 
-      destroyVoiceInstance();
+      const joinGen = (voiceJoinGeneration.current += 1);
+      await destroyVoiceInstanceAsync();
       const pres = voicePresenceByChannelId[String(voiceChannelId)] || null;
       const presIds = (pres?.userIds || []).map((x) => String(x)).filter(Boolean);
       const presSharers = (pres?.screenShareUserIds || []).map((x) => String(x)).filter(Boolean);
@@ -5604,6 +5620,7 @@ function App() {
             };
           },
           onForceLeave: () => {
+            if (joinGen !== voiceJoinGeneration.current) return;
             if (!voiceRef.current) return;
             setError(
               "Голос отключён: с этим аккаунтом открыт другой Sloncord. Закройте лишние окна/версии и зайдите в канал снова."
@@ -5733,10 +5750,16 @@ function App() {
       }));
     } finally {
       connectVoiceInFlight.current = false;
+      const pending = pendingVoiceChannelId.current;
+      if (pending) {
+        pendingVoiceChannelId.current = null;
+        void connectVoiceToChannel(pending, { suppressJoinSfx: true }).catch(() => {});
+      }
     }
   }
 
   function leaveVoice() {
+    voiceJoinGeneration.current += 1;
     clearAlerts();
     try {
       const leavingChannelId = String(activeVoiceChannelId || "");

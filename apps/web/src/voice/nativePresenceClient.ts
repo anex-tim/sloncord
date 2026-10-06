@@ -111,7 +111,7 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
           return;
         }
         if (ev.code === 1000 && String(ev.reason || "").toLowerCase() === "replaced") {
-          opts.onForceLeave();
+          if (!opts.isDestroyed()) opts.onForceLeave();
           return;
         }
         scheduleReconnect();
