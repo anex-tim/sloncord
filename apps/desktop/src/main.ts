@@ -771,6 +771,8 @@ type NativeVoiceProc = {
   proc: ReturnType<typeof spawn>;
   /** Остановлен намеренно (смена канала / destroy) — не слать error в UI. */
   stopping: boolean;
+  /** Сразу завершает ожидание ready, если stop пришёл до ответа helper. */
+  cancelStart?: (reason: string) => void;
 };
 
 let nativeVoiceHelper: NativeVoiceProc | null = null;
@@ -784,6 +786,11 @@ function resolveNativeVoiceHelperPath(): string {
 function stopNativeVoiceInternal(): void {
   const cur = nativeVoiceHelper;
   nativeVoiceHelper = null;
+  try {
+    cur?.cancelStart?.("cancelled");
+  } catch {
+    /* ignore */
+  }
   if (!cur?.proc) return;
   cur.stopping = true;
   try {
@@ -904,6 +911,8 @@ ipcMain.handle(
           proc.stdout?.off("data", onData);
           resolve(r);
         };
+        helper.cancelStart = (reason) => finish({ ok: false, error: reason || "cancelled" });
+        proc.once("exit", () => finish({ ok: false, error: "cancelled" }));
         const timer = setTimeout(
           () => finish({ ok: false, error: "SloncordNativeVoice: нет ответа ready (таймаут 8 с)" }),
           8000

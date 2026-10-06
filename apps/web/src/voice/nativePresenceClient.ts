@@ -30,6 +30,8 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
   let reconnectFailures = 0;
   let closedByUs = false;
   let connectPromise: Promise<void> | null = null;
+  /** Rejects the in-flight connect() when close() runs before joinedRoom. */
+  let abortConnect: (() => void) | null = null;
   /** Bumps on close()/destroy to ignore stale socket callbacks. */
   let connectGeneration = 0;
 
@@ -122,19 +124,19 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
       };
 
       const finishErr = (err: Error) => {
-        if (settled || gen !== connectGeneration) return;
+        if (settled) return;
         settled = true;
         clearTimeout(timer);
         connectPromise = null;
-        if (socket !== ws) {
-          try {
-            socket.close();
-          } catch {
-            /* ignore */
-          }
+        if (abortConnect) abortConnect = null;
+        try {
+          socket.close();
+        } catch {
+          /* ignore */
         }
         reject(err);
       };
+      abortConnect = () => finishErr(new Error("destroyed"));
 
       const timer = setTimeout(() => finishErr(new Error("voice_ws_join_timeout")), 12000);
 
@@ -187,8 +189,11 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
 
   function close() {
     closedByUs = true;
-    connectGeneration += 1;
+    const abort = abortConnect;
+    abortConnect = null;
     connectPromise = null;
+    abort?.();
+    connectGeneration += 1;
     joinedRoomId = "";
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = null;

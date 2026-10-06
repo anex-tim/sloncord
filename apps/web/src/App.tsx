@@ -5522,7 +5522,9 @@ function App() {
       return;
     }
     clearAlerts();
+    const joinGen = (voiceJoinGeneration.current += 1);
     connectVoiceInFlight.current = true;
+    const voiceJoinAborted = () => joinGen !== voiceJoinGeneration.current;
     try {
       if (!token) return;
       if (!voiceChannelId) return;
@@ -5599,8 +5601,9 @@ function App() {
           });
       }
 
-      const joinGen = (voiceJoinGeneration.current += 1);
+      if (voiceJoinAborted()) return;
       await destroyVoiceInstanceAsync();
+      if (voiceJoinAborted()) return;
       const pres = voicePresenceByChannelId[String(voiceChannelId)] || null;
       const presIds = (pres?.userIds || []).map((x) => String(x)).filter(Boolean);
       const presSharers = (pres?.screenShareUserIds || []).map((x) => String(x)).filter(Boolean);
@@ -5702,8 +5705,12 @@ function App() {
           },
         });
         voiceRef.current = nativeSession;
+        if (voiceJoinAborted()) {
+          nativeSession.destroy();
+          return;
+        }
         await nativeSession.join();
-        if (joinGen !== voiceJoinGeneration.current) return;
+        if (voiceJoinAborted()) return;
         voiceStateRef.current = {
           ...(voiceStateRef.current || {}),
           connected: true,
@@ -5831,8 +5838,11 @@ function App() {
       }
       setStatus("В голосовом канале. Сигнальные обмены идут в фоне.");
     } catch (e) {
+      if (voiceJoinAborted()) return;
+      const raw = String(e?.message || e || "");
+      if (raw === "destroyed" || raw === "cancelled") return;
       setActiveVoiceChannelId("");
-      setError(e.message || String(e));
+      setError(raw);
       setVoiceState((prev) => ({
         ...prev,
         connected: false,
@@ -5843,8 +5853,8 @@ function App() {
       connectVoiceInFlight.current = false;
       const pending = pendingVoiceChannelId.current;
       pendingVoiceChannelId.current = null;
-      // Повторный join того же канала (двойной клик / stale pending) рвёт только что открытую сессию.
-      if (pending && pending !== targetChannelId) {
+      // Тот же канал после отмены «Подключение…» нужно доиграть; иначе повторный join рвёт живую сессию.
+      if (pending && (voiceJoinAborted() || pending !== targetChannelId)) {
         void connectVoiceToChannel(pending, { suppressJoinSfx: true }).catch(() => {});
       }
     }

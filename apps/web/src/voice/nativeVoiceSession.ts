@@ -172,7 +172,10 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
         muted,
         deafened,
       });
-      if (!res.ok) throw new Error(res.error || "native_voice_start_failed");
+      if (!res.ok) {
+        if (destroyed || res.error === "cancelled") throw new Error("destroyed");
+        throw new Error(res.error || "native_voice_start_failed");
+      }
       lastNativeUdpRefreshAt = Date.now();
     })();
     try {
@@ -344,8 +347,10 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
         }) ?? null;
 
       await presence.connect();
+      if (destroyed) throw new Error("destroyed");
       presence.startPing();
       await refreshNativeUdp();
+      if (destroyed) throw new Error("destroyed");
       await rebuildSessionMap();
       applyMuteDeafen();
       startSpeakingLoop();
