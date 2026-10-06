@@ -1,0 +1,25 @@
+[Unit]
+Description=Sloncord (ASP.NET Core + static UI)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sloncord/app
+ExecStart=/usr/bin/dotnet /opt/sloncord/app/Server.dll
+Restart=always
+RestartSec=3
+
+EnvironmentFile=-/etc/sloncord/sloncord.env
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5000
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_PRINT_TELEMETRY_MESSAGE=false
+
+User=www-data
+Group=www-data
+
+# App publish dir + persistent uploads (see SLONCORD_DATA_DIR in /etc/sloncord/sloncord.env)
+ReadWritePaths=/opt/sloncord/app /data/sloncord
+
+[Install]
+WantedBy=multi-user.target

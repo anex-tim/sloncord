@@ -1,0 +1,20 @@
+{
+  "name": "Sloncord",
+  "short_name": "Sloncord",
+  "description": "Мессенджер в стиле Discord",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#313338",
+  "theme_color": "#313338",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icons/sloncord.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+

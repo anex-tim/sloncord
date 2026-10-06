@@ -1,0 +1,106 @@
+{
+  "name": "@sloncord/desktop",
+  "private": true,
+  "version": "3.1.2",
+  "description": "Sloncord desktop",
+  "author": "Sloncord",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "prepare-icon": "node ./scripts/prepare-icon.mjs",
+    "compile": "node ./scripts/prepare-icon.mjs && node ./scripts/esbuild.mjs",
+    "build:native-audio-helper": "node ./scripts/build-native-audio-helper.mjs",
+    "build:native-voice": "node ./scripts/build-native-voice.mjs",
+    "prebuild": "npm run build:native-audio-helper && npm run build:native-voice",
+    "copy-web": "node ./scripts/copy-web-dist.mjs",
+    "start": "npm run compile && electron .",
+    "start:local": "npm run copy-web && npm run compile && electron .",
+    "dev": "cross-env SLONCORD_USE_VITE=1 npm run compile && cross-env SLONCORD_USE_VITE=1 electron .",
+    "clean:release": "node ./scripts/clean-release.mjs",
+    "clean:electron-cache": "node ./scripts/clean-electron-builder-cache.mjs",
+    "copy-downloads-to-web-dist": "node ./scripts/copy-downloads-to-web-dist.mjs",
+    "build:installer": "npm run prebuild && npm run copy-web && npm run compile && node ./scripts/electron-builder-win.mjs --win && node scripts/publish-to-web.mjs && node ./scripts/copy-downloads-to-web-dist.mjs",
+    "build": "npm run build --prefix ../../apps/web && npm run copy-web && npm run compile && node ./scripts/electron-builder-win.mjs --win && node scripts/publish-to-web.mjs && npm run build --prefix ../../apps/web",
+    "build:with-clean-cache": "npm run clean:electron-cache && npm run build",
+    "build:dir": "npm run prebuild && npm run build --prefix ../../apps/web && npm run copy-web && npm run compile && node ./scripts/electron-builder-win.mjs --win --dir",
+    "publish-web": "node scripts/publish-to-web.mjs"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "34.0.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.2",
+    "png-to-ico": "^1.0.0",
+    "sharp": "^0.33.5",
+    "typescript": "^5.7.3"
+  },
+  "build": {
+    "appId": "com.sloncord.desktop",
+    "productName": "Sloncord",
+    "asar": true,
+    "forceCodeSigning": false,
+    "protocols": [
+      {
+        "name": "Sloncord App",
+        "schemes": ["sloncord-app"]
+      }
+    ],
+    "directories": {
+      "buildResources": "resources",
+      "output": "release"
+    },
+    "electronVersion": "34.0.0",
+    "files": [
+      "dist-electron/**/*",
+      "resources/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "dist-web",
+        "to": "dist-web"
+      },
+      {
+        "from": "resources/SloncordWinAudioHelper.exe",
+        "to": "SloncordWinAudioHelper.exe"
+      },
+      {
+        "from": "resources/SloncordNativeVoice.exe",
+        "to": "SloncordNativeVoice.exe"
+      },
+      {
+        "from": "resources/app-icon.png",
+        "to": "app-icon.png"
+      },
+      {
+        "from": "resources/app-icon.ico",
+        "to": "app-icon.ico"
+      }
+    ],
+    "win": {
+      "icon": "resources/app-icon.ico",
+      "signDlls": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "shortcutName": "Sloncord",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "include": "installer.nsh",
+      "runAfterFinish": true,
+      "differentialPackage": false
+    },
+    "compression": "normal"
+  }
+}

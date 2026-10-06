@@ -1,0 +1,2 @@
+# Установщик копируется сюда скриптом apps/desktop/scripts/publish-to-web.mjs
+public/downloads/*.exe

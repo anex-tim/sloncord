@@ -1,0 +1,20 @@
+[Unit]
+Description=Sloncord SFU (mediasoup)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/sloncord/sfu
+EnvironmentFile=/etc/sloncord/sloncord.env
+Environment=SLONCORD_SFU_PORT=3333
+Environment=SLONCORD_SFU_WS_PATH=/ws/sfu
+Environment=SLONCORD_SFU_RTC_MIN_PORT=10000
+Environment=SLONCORD_SFU_RTC_MAX_PORT=20000
+Restart=always
+RestartSec=2
+ExecStart=/usr/bin/node /opt/sloncord/sfu/src/index.js
+
+[Install]
+WantedBy=multi-user.target
+

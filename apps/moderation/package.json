@@ -1,0 +1,92 @@
+{
+  "name": "@sloncord/moderation",
+  "private": true,
+  "version": "1.2.7",
+  "description": "Sloncord platform moderation (Electron)",
+  "author": "Sloncord",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev:ui": "vite",
+    "compile": "node ./scripts/prepare-icon.mjs && node ./scripts/esbuild.mjs",
+    "prepare-icon": "node ./scripts/prepare-icon.mjs",
+    "copy-ui": "node ./scripts/copy-ui-dist.mjs",
+    "start": "npm run compile && electron .",
+    "dev": "cross-env SLONMOD_USE_VITE=1 npm run compile && cross-env SLONMOD_USE_VITE=1 electron .",
+    "build:ui": "vite build",
+    "build": "npm run build:ui && npm run copy-ui && npm run compile && node ./scripts/electron-builder-win.mjs --win && node scripts/publish-to-web.mjs",
+    "publish-web": "node scripts/publish-to-web.mjs",
+    "prebuild": "node ./scripts/prepare-icon.mjs && node ./scripts/ensure-builder-deps.mjs",
+    "build:dir": "npm run build:ui && npm run copy-ui && npm run compile && node ./scripts/electron-builder-win.mjs --win --dir"
+  },
+  "dependencies": {
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react-swc": "^3.7.2",
+    "cross-env": "^7.0.3",
+    "electron": "34.0.0",
+    "electron-builder": "^25.1.8",
+    "electron-store": "^8.2.0",
+    "esbuild": "^0.24.2",
+    "png-to-ico": "^1.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sharp": "^0.33.5",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  },
+  "build": {
+    "appId": "com.sloncord.moderation",
+    "productName": "Sloncord Moderation",
+    "asar": true,
+    "forceCodeSigning": false,
+    "npmRebuild": false,
+    "directories": {
+      "buildResources": "resources",
+      "output": "release"
+    },
+    "electronVersion": "34.0.0",
+    "files": [
+      "dist-electron/**/*",
+      "resources/app-icon.ico"
+    ],
+    "extraResources": [
+      {
+        "from": "dist-ui",
+        "to": "dist-ui"
+      },
+      {
+        "from": "resources/app-icon.png",
+        "to": "app-icon.png"
+      },
+      {
+        "from": "resources/app-icon.ico",
+        "to": "app-icon.ico"
+      }
+    ],
+    "win": {
+      "icon": "resources/app-icon.ico",
+      "signDlls": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "shortcutName": "Sloncord Moderation",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "resources/app-icon.ico",
+      "uninstallerIcon": "resources/app-icon.ico",
+      "include": "installer.nsh",
+      "runAfterFinish": true
+    },
+    "compression": "normal"
+  }
+}

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <rect x="12" y="8" width="40" height="48" rx="10" fill="#3A2E1E"/>
+  <rect x="18" y="38" width="28" height="12" rx="6" fill="#F5A623"/>
+  <text x="32" y="47" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial" font-size="10" font-weight="800" fill="white">ZIP</text>
+  <path d="M32 16v22" stroke="#FFE1B3" stroke-width="4" stroke-linecap="round" stroke-dasharray="4 6"/>
+  <path d="M28 22h8" stroke="#FFE1B3" stroke-width="4" stroke-linecap="round"/>
+</svg>

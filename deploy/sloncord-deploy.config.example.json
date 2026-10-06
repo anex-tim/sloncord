@@ -1,0 +1,19 @@
+{
+  "host": "sloncord.example.com",
+  "port": 22,
+  "user": "deploy",
+  "remoteWwwroot": "/opt/sloncord/app/wwwroot",
+  "sshKey": "C:/Users/You/.ssh/id_ed25519",
+  "sshPassword": "",
+  "wipeBeforeUpload": false,
+  "skipInstallerInDeploy": true,
+  "apiServiceName": "sloncord-api",
+  "remoteDataDir": "/data/sloncord",
+  "setupSystemdOnDeploy": true,
+  "restartService": "systemctl daemon-reload && systemctl restart sloncord-api.service",
+  "deployApi": true,
+  "remoteAppRoot": "/opt/sloncord/app",
+  "deploySfu": false,
+  "remoteSfuRoot": "/opt/sloncord/sfu",
+  "restartSfuService": "systemctl restart sloncord-sfu.service"
+}

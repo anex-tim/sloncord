@@ -1,0 +1,62 @@
+name: Release Desktop (Windows)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build desktop installer
+        run: npm run build:desktop-installer
+
+      - name: Read version
+        id: ver
+        shell: bash
+        run: echo "version=$(node -p \"require('./apps/desktop/package.json').version\")" >> "$GITHUB_OUTPUT"
+
+      - name: Update release manifest
+        shell: bash
+        run: |
+          node -e "
+          const fs=require('fs');
+          const v='${{ steps.ver.outputs.version }}';
+          const tag='v'+v;
+          const repo=process.env.GITHUB_REPOSITORY;
+          const name='Sloncord-Setup-x64.exe';
+          const meta={
+            version:v,
+            available:true,
+            fileName:name,
+            downloadUrl:'https://github.com/'+repo+'/releases/download/'+tag+'/'+name,
+            size:fs.statSync('apps/web/public/downloads/'+name).size,
+            releasedAt:new Date().toISOString(),
+            githubRepo:repo
+          };
+          fs.writeFileSync('releases/desktop-release.json', JSON.stringify(meta,null,2)+'\n');
+          "
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: apps/web/public/downloads/Sloncord-Setup-x64.exe
+          generate_release_notes: true
+
+      - name: Commit manifest (optional bot)
+        if: false
+        run: echo "Commit releases/desktop-release.json locally after tag if needed"

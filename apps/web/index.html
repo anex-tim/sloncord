@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <script>
+      (function () {
+        var m = /^\/invite\/([^/?#]+)/i.exec(location.pathname);
+        if (!m) return;
+        var q = new URLSearchParams(location.search);
+        q.set("invite", decodeURIComponent(m[1]));
+        location.replace("/?" + q.toString() + location.hash);
+      })();
+    </script>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#313338" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Sloncord</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/sloncord.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/sloncord.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="toast-root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

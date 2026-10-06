@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <rect x="12" y="8" width="40" height="48" rx="10" fill="#1F2D49"/>
+  <rect x="18" y="38" width="28" height="12" rx="6" fill="#2F6FED"/>
+  <text x="32" y="47" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial" font-size="9" font-weight="800" fill="white">DOCX</text>
+  <path d="M22 20h20" stroke="#BFD3FF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M22 30h16" stroke="#BFD3FF" stroke-width="4" stroke-linecap="round"/>
+</svg>

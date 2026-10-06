@@ -1,0 +1,38 @@
+# Optional coturn for clients behind symmetric NAT / strict firewalls.
+# Point Sloncord backend Turn:Urls at turn:your-public-ip:3478 (or turns:...).
+#
+# Usage:
+#   export TURN_SECRET=your-long-shared-secret
+#   export TURN_REALM=sloncord.local
+#   export TURN_EXTERNAL_IP=YOUR_PUBLIC_IPV4
+#   docker compose -f docker-compose.coturn.yml up -d
+#
+# appsettings.json (or env):
+#   Sloncord:Voice:Turn:Urls = [ "turn:YOUR_PUBLIC_IP:3478?transport=udp", "turn:YOUR_PUBLIC_IP:3478?transport=tcp" ]
+#   Sloncord:Voice:Turn:Username = sloncord
+#   Sloncord:Voice:Turn:Credential = <same as TURN_SECRET or use coturn static user>
+
+services:
+  coturn:
+    image: coturn/coturn:4.6.2
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TURN_REALM: ${TURN_REALM:-sloncord.local}
+      TURN_SECRET: ${TURN_SECRET:-CHANGE_ME}
+      TURN_EXTERNAL_IP: ${TURN_EXTERNAL_IP:-}
+    command:
+      - -n
+      - --log-file=stdout
+      - --realm=${TURN_REALM:-sloncord.local}
+      - --listening-port=3478
+      - --min-port=49152
+      - --max-port=65535
+      - --fingerprint
+      - --lt-cred-mech
+      - --user=sloncord:${TURN_SECRET:-CHANGE_ME}
+      - --no-multicast-peers
+      - --no-cli
+      - --no-tlsv1
+      - --no-tlsv1_1
+      - ${TURN_EXTERNAL_IP:+--external-ip=${TURN_EXTERNAL_IP}}
