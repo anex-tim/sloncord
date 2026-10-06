@@ -304,8 +304,18 @@ internal sealed class VoiceSignalingServer
 
             foreach (var (s, rid) in toClose)
             {
-                // Remove before closing to immediately update presence.
-                RemoveSocketFromRoom(rid, userId, s, notifyPeerLeft: true, prevUserId: userId, roomRoster: true, skipGrace: true, ct);
+                // Same-room native reconnect: keep grace so a brief overlap of sockets does not
+                // drop the user from roster before the new socket is registered.
+                var sameRoom = string.Equals(rid, roomId, StringComparison.OrdinalIgnoreCase);
+                var skipGraceForOld = !(isNative && sameRoom);
+                var notifyLeft = !sameRoom;
+                RemoveSocketFromRoom(
+                    rid, userId, s,
+                    notifyPeerLeft: notifyLeft,
+                    prevUserId: userId,
+                    roomRoster: true,
+                    skipGrace: skipGraceForOld,
+                    ct);
                 affectedRooms.Add(rid);
             }
 

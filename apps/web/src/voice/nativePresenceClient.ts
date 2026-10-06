@@ -24,13 +24,14 @@ export type NativePresenceClientApi = {
 export function createNativePresenceClient(opts: NativePresenceClientOptions): NativePresenceClientApi {
   const url = buildBackendWsUrl("/ws/voice", opts.token);
   let ws: WebSocket | null = null;
+  let joinedRoomId = "";
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectFailures = 0;
-  /** Closing socket to open a new one — ignore onclose (avoid reconnect storm). */
-  let replacingSocket = false;
   let closedByUs = false;
   let connectPromise: Promise<void> | null = null;
+  /** Bumps on close()/destroy to ignore stale socket callbacks. */
+  let connectGeneration = 0;
 
   function send(obj: Record<string, unknown>) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -59,13 +60,22 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
     }, waitMs);
   }
 
-  function handleMessage(msg: Record<string, unknown>) {
+  function handleMessage(socket: WebSocket, msg: Record<string, unknown>, finishJoin?: () => void) {
+    if (msg.type === "joinedRoom" && String(msg.roomId || "") === String(opts.roomId)) {
+      if (ws === socket || !ws) {
+        ws = socket;
+        joinedRoomId = String(opts.roomId);
+      }
+      finishJoin?.();
+      return;
+    }
     if (msg.type === "nativeReady" && String(msg.roomId || opts.roomId) === String(opts.roomId)) {
       opts.onNativeReady();
       return;
     }
     if (msg.type === "forceLeave" && String(msg.roomId) === String(opts.roomId)) {
       closedByUs = true;
+      connectGeneration += 1;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       reconnectTimer = null;
       opts.onForceLeave();
@@ -81,84 +91,112 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
   }
 
   function connect(): Promise<void> {
+    if (opts.isDestroyed()) return Promise.reject(new Error("destroyed"));
+    if (ws?.readyState === WebSocket.OPEN && joinedRoomId === String(opts.roomId)) {
+      return Promise.resolve();
+    }
     if (connectPromise) return connectPromise;
-    connectPromise = new Promise((resolve, reject) => {
-      if (opts.isDestroyed()) {
-        connectPromise = null;
-        reject(new Error("destroyed"));
-        return;
-      }
-      const prev = ws;
-      const socket = new WebSocket(url);
-      ws = socket;
-      replacingSocket = true;
-      try {
-        prev?.close();
-      } catch {
-        /* ignore */
-      }
 
+    const gen = ++connectGeneration;
+    const prevWs = ws;
+
+    connectPromise = new Promise((resolve, reject) => {
+      const socket = new WebSocket(url);
       let settled = false;
+
       const finishOk = () => {
-        if (settled) return;
+        if (settled || gen !== connectGeneration || opts.isDestroyed()) return;
         settled = true;
+        clearTimeout(timer);
         connectPromise = null;
+        ws = socket;
+        joinedRoomId = String(opts.roomId);
+        if (prevWs && prevWs !== socket) {
+          try {
+            prevWs.close();
+          } catch {
+            /* ignore */
+          }
+        }
         resolve();
       };
+
       const finishErr = (err: Error) => {
-        if (settled) return;
+        if (settled || gen !== connectGeneration) return;
         settled = true;
+        clearTimeout(timer);
         connectPromise = null;
+        if (socket !== ws) {
+          try {
+            socket.close();
+          } catch {
+            /* ignore */
+          }
+        }
         reject(err);
       };
 
+      const timer = setTimeout(() => finishErr(new Error("voice_ws_join_timeout")), 12000);
+
       socket.onopen = () => {
-        if (ws !== socket) return;
-        replacingSocket = false;
-        send({ type: "joinRoom", roomId: opts.roomId, mode: "native" });
-        finishOk();
+        if (gen !== connectGeneration) return;
+        try {
+          socket.send(
+            JSON.stringify({ type: "joinRoom", roomId: opts.roomId, mode: "native" })
+          );
+        } catch {
+          finishErr(new Error("voice_ws_send_failed"));
+        }
       };
+
       socket.onerror = () => {
-        if (ws !== socket) return;
-        replacingSocket = false;
-        finishErr(new Error("voice_ws_error"));
+        if (gen !== connectGeneration) return;
+        if (!settled) finishErr(new Error("voice_ws_error"));
       };
+
       socket.onclose = (ev) => {
-        // Ignore stale sockets superseded by a newer connect() (server closes them with "replaced").
-        if (socket !== ws) return;
-        if (replacingSocket || closedByUs || opts.isDestroyed()) {
-          replacingSocket = false;
-          if (!settled) finishErr(new Error("voice_ws_closed"));
+        if (gen !== connectGeneration) return;
+        if (settled && socket !== ws) return;
+        if (!settled) {
+          finishErr(new Error("voice_ws_closed"));
           return;
         }
-        if (!settled) finishErr(new Error("voice_ws_closed"));
+        ws = null;
+        joinedRoomId = "";
+        if (closedByUs || opts.isDestroyed()) return;
         if (ev.code === 1000 && String(ev.reason || "").toLowerCase() === "replaced") {
           scheduleReconnect();
           return;
         }
         scheduleReconnect();
       };
+
       socket.onmessage = (ev) => {
+        if (gen !== connectGeneration) return;
         try {
           const msg = JSON.parse(String(ev.data || "")) as Record<string, unknown>;
-          handleMessage(msg);
+          handleMessage(socket, msg, finishOk);
         } catch {
           /* ignore */
         }
       };
     });
+
     return connectPromise;
   }
 
   function close() {
     closedByUs = true;
+    connectGeneration += 1;
     connectPromise = null;
+    joinedRoomId = "";
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = null;
     stopPing();
-    replacingSocket = true;
     try {
-      send({ type: "leaveRoom" });
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "leaveRoom" }));
+      }
     } catch {
       /* ignore */
     }
@@ -168,7 +206,6 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
       /* ignore */
     }
     ws = null;
-    replacingSocket = false;
   }
 
   function startPing() {

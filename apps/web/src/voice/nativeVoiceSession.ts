@@ -72,6 +72,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
   let unsubError: (() => void) | null = null;
   let unsubRemoteVideo: (() => void) | null = null;
   let lastNativeUdpRefreshAt = 0;
+  let nativeUdpRefreshInFlight: Promise<void> | null = null;
   let screenSharing = false;
   let screenStream: MediaStream | null = null;
   let screenCaptureTimer: ReturnType<typeof setInterval> | null = null;
@@ -149,20 +150,32 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
 
   async function refreshNativeUdp() {
     if (destroyed) return;
-    const creds = await opts.fetchNativeJoin();
-    if (destroyed) return;
-    const b = bridge();
-    if (!b?.startNativeVoice) throw new Error("Native voice недоступен (нужен Sloncord Desktop).");
-    const res = await b.startNativeVoice({
-      ...creds,
-      udpHost: resolveNativeUdpHost(creds.udpHost),
-      roomId: opts.roomId,
-      userId: String(opts.selfUserId),
-      muted,
-      deafened,
-    });
-    if (!res.ok) throw new Error(res.error || "native_voice_start_failed");
-    lastNativeUdpRefreshAt = Date.now();
+    if (nativeUdpRefreshInFlight) {
+      await nativeUdpRefreshInFlight.catch(() => {});
+      return;
+    }
+    nativeUdpRefreshInFlight = (async () => {
+      if (destroyed) return;
+      const creds = await opts.fetchNativeJoin();
+      if (destroyed) return;
+      const b = bridge();
+      if (!b?.startNativeVoice) throw new Error("Native voice недоступен (нужен Sloncord Desktop).");
+      const res = await b.startNativeVoice({
+        ...creds,
+        udpHost: resolveNativeUdpHost(creds.udpHost),
+        roomId: opts.roomId,
+        userId: String(opts.selfUserId),
+        muted,
+        deafened,
+      });
+      if (!res.ok) throw new Error(res.error || "native_voice_start_failed");
+      lastNativeUdpRefreshAt = Date.now();
+    })();
+    try {
+      await nativeUdpRefreshInFlight;
+    } finally {
+      nativeUdpRefreshInFlight = null;
+    }
   }
 
   function applyMuteDeafen() {

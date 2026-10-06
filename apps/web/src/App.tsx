@@ -5495,7 +5495,7 @@ function App() {
       // ignore
     }
     if (voiceRef.current === inst) voiceRef.current = null;
-    await new Promise((r) => setTimeout(r, 220));
+    await new Promise((r) => setTimeout(r, 450));
   }
 
   async function connectVoiceToChannel(voiceChannelId, opts) {
@@ -5636,7 +5636,15 @@ function App() {
         const patchVoiceState = (patch) => {
           setVoiceState((prev) => {
             if (voiceRef.current !== nativeSession) return prev;
-            return { ...prev, ...patch };
+            const next = { ...prev, ...patch };
+            if (next.connected === false && !next.joining) {
+              setStatus((s) => {
+                const t = String(s || "");
+                if (t.includes("голосовом канале") || t.includes("native UDP")) return "";
+                return s;
+              });
+            }
+            return next;
           });
         };
         nativeSession = createNativeVoiceSession({

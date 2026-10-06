@@ -2636,9 +2636,17 @@ internal static class SloncordEndpoints
                 return Results.Forbid();
 
             var join = nativeSvc.CreateJoin(me.Value, req.RoomId.Trim());
+            var udpHost = join.UdpHost;
+            if (string.IsNullOrWhiteSpace(udpHost)
+                || udpHost is "127.0.0.1" or "localhost" or "::1")
+            {
+                var reqHost = ctx.Request.Host.Host;
+                if (!string.IsNullOrWhiteSpace(reqHost)) udpHost = reqHost.Trim();
+            }
+
             return Results.Ok(new
             {
-                udpHost = join.UdpHost,
+                udpHost,
                 udpPort = join.UdpPort,
                 sessionToken = join.SessionToken,
                 sessionId = join.SessionId,
