@@ -82,23 +82,30 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
         reject(new Error("destroyed"));
         return;
       }
+      const prev = ws;
+      const socket = new WebSocket(url);
+      ws = socket;
       replacingSocket = true;
       try {
-        ws?.close();
+        prev?.close();
       } catch {
         /* ignore */
       }
-      ws = new WebSocket(url);
-      ws.onopen = () => {
+
+      socket.onopen = () => {
+        if (ws !== socket) return;
         replacingSocket = false;
         send({ type: "joinRoom", roomId: opts.roomId, mode: "native" });
         resolve();
       };
-      ws.onerror = () => {
+      socket.onerror = () => {
+        if (ws !== socket) return;
         replacingSocket = false;
         reject(new Error("voice_ws_error"));
       };
-      ws.onclose = (ev) => {
+      socket.onclose = (ev) => {
+        // Ignore stale sockets superseded by a newer connect() (server closes them with "replaced").
+        if (socket !== ws) return;
         if (replacingSocket || closedByUs || opts.isDestroyed()) {
           replacingSocket = false;
           return;
@@ -109,7 +116,7 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
         }
         scheduleReconnect();
       };
-      ws.onmessage = (ev) => {
+      socket.onmessage = (ev) => {
         try {
           const msg = JSON.parse(String(ev.data || "")) as Record<string, unknown>;
           handleMessage(msg);

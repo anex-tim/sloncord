@@ -5604,6 +5604,7 @@ function App() {
             };
           },
           onForceLeave: () => {
+            if (!voiceRef.current) return;
             setError(
               "Голос отключён: с этим аккаунтом открыт другой Sloncord. Закройте лишние окна/версии и зайдите в канал снова."
             );
