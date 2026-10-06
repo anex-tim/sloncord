@@ -2994,9 +2994,10 @@ function App() {
   const prevVoiceConnectedRef = useRef(false);
   useEffect(() => {
     const connected = !!voiceState.connected && !voiceState.joining;
-    if (connected && activeVoiceChannelId) {
+    const inVoicePanel = connected && !!activeVoiceChannelId;
+    if (inVoicePanel) {
       setStatus("В голосовом канале (native UDP).");
-    } else if (!voiceState.connected && !voiceState.joining) {
+    } else {
       setStatus((s) => {
         const t = String(s || "");
         if (t.includes("голосовом канале") || t.includes("native UDP")) return "";
@@ -5629,12 +5630,19 @@ function App() {
       const useNativeVoice = useNativeVoiceEarly;
 
       if (useNativeVoice) {
-        const session = createNativeVoiceSession({
+        let nativeSession = null;
+        const patchVoiceState = (patch) => {
+          setVoiceState((prev) => {
+            if (voiceRef.current !== nativeSession) return prev;
+            return { ...prev, ...patch };
+          });
+        };
+        nativeSession = createNativeVoiceSession({
           token,
           roomId,
           selfUserId: me.id,
           remoteVideoHost: videoHost,
-          onState: setVoiceState,
+          onState: patchVoiceState,
           onScreenAudioError: (msg) => {
             try {
               setError(String(msg || ""));
@@ -5683,8 +5691,16 @@ function App() {
             }
           },
         });
-        voiceRef.current = session;
-        await session.join();
+        voiceRef.current = nativeSession;
+        await nativeSession.join();
+        if (joinGen !== voiceJoinGeneration.current) return;
+        voiceStateRef.current = {
+          ...(voiceStateRef.current || {}),
+          connected: true,
+          joining: false,
+          mediaLinkReady: true,
+          room: roomId,
+        };
         try {
           localStorage.setItem("sloncord_last_voice_channel_id", String(voiceChannelId));
         } catch {
@@ -5702,13 +5718,20 @@ function App() {
       }
       const sfu = await api("/voice/sfuToken", { method: "POST", body: JSON.stringify({ roomId }) });
       const useVoiceGateway = sfu?.gateway === true;
-      const session = createSfuVoiceSession({
+      let sfuSession = null;
+      const patchVoiceStateSfu = (patch) => {
+        setVoiceState((prev) => {
+          if (voiceRef.current !== sfuSession) return prev;
+          return { ...prev, ...patch };
+        });
+      };
+      sfuSession = createSfuVoiceSession({
         token,
         roomId,
         selfUserId: me.id,
         remoteAudioHost: host,
         remoteVideoHost: videoHost,
-        onState: setVoiceState,
+        onState: patchVoiceStateSfu,
         iceServers,
         tokenTtlSeconds: sfu?.tokenTtlSeconds,
         useVoiceGateway,
@@ -5772,8 +5795,16 @@ function App() {
           }
         }
       });
-      voiceRef.current = session;
-      await session.join();
+      voiceRef.current = sfuSession;
+      await sfuSession.join();
+      if (joinGen !== voiceJoinGeneration.current) return;
+      voiceStateRef.current = {
+        ...(voiceStateRef.current || {}),
+        connected: true,
+        joining: false,
+        mediaLinkReady: true,
+        room: roomId,
+      };
       try {
         voiceRef.current?.setInputDevice?.(String(audioSettings.inputDeviceId || ""));
         voiceRef.current?.setMicGain?.(audioSettings.micGain);
@@ -5802,14 +5833,9 @@ function App() {
       connectVoiceInFlight.current = false;
       const pending = pendingVoiceChannelId.current;
       pendingVoiceChannelId.current = null;
-      if (pending) {
-        const alreadyOnChannel =
-          pending === targetChannelId &&
-          String(activeVoiceChannelIdRef.current || "") === pending &&
-          (voiceStateRef.current?.connected || voiceStateRef.current?.joining);
-        if (!alreadyOnChannel) {
-          void connectVoiceToChannel(pending, { suppressJoinSfx: true }).catch(() => {});
-        }
+      // Повторный join того же канала (двойной клик / stale pending) рвёт только что открытую сессию.
+      if (pending && pending !== targetChannelId) {
+        void connectVoiceToChannel(pending, { suppressJoinSfx: true }).catch(() => {});
       }
     }
   }
