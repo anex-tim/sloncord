@@ -185,6 +185,7 @@ internal sealed class VoiceRuntime
         _waveIn.StartRecording();
 
         _ = Task.Run(() => ReceiveLoop(_cts.Token));
+        _emit(new { type = "ready" });
     }
 
     private async Task SendBindAsync()

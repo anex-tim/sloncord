@@ -870,7 +870,40 @@ ipcMain.handle(
         if (nativeVoiceHelper?.proc === proc) nativeVoiceHelper = null;
       });
       const startLine = `${JSON.stringify({ cmd: "start", ...cfg })}\n`;
-      proc.stdin?.write(startLine);
+      const ready = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+        let settled = false;
+        const finish = (r: { ok: boolean; error?: string }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          proc.stdout?.off("data", onData);
+          resolve(r);
+        };
+        const timer = setTimeout(() => finish({ ok: true }), 5000);
+        const onData = (chunk: Buffer) => {
+          const lines = String(chunk || "").split(/\r?\n/);
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const msg = JSON.parse(line) as { type?: string; message?: string };
+              if (msg.type === "ready") finish({ ok: true });
+              if (msg.type === "error") finish({ ok: false, error: String(msg.message || "native_voice_error") });
+            } catch {
+              /* ignore */
+            }
+          }
+        };
+        proc.stdout?.on("data", onData);
+        try {
+          proc.stdin?.write(startLine);
+        } catch (e) {
+          finish({ ok: false, error: e instanceof Error ? e.message : String(e) });
+        }
+      });
+      if (!ready.ok) {
+        stopNativeVoiceInternal();
+        return { ok: false, error: ready.error || "native_voice_start_failed" };
+      }
       return { ok: true };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

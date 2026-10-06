@@ -3086,26 +3086,7 @@ function App() {
     else if (turnedOff > 0) playVoiceSfx("screen_off");
   }, [voiceState.connected, voiceState.room, (voiceState.screenShareUserIds || []).join(",")]);
 
-  const voiceRestoreTried = useRef(false);
-  useEffect(() => {
-    if (!token) return;
-    if (voiceRestoreTried.current) return;
-    if (voiceState.connected || voiceState.joining) return;
-    if (!servers || servers.length === 0) return;
-    let last = "";
-    try {
-      last = localStorage.getItem("sloncord_last_voice_channel_id") || "";
-    } catch {
-      last = "";
-    }
-    if (!last) {
-      voiceRestoreTried.current = true;
-      return;
-    }
-    // Try reconnect once after reload.
-    voiceRestoreTried.current = true;
-    connectVoiceToChannel(last).catch(() => {});
-  }, [token, servers, voiceState.connected, voiceState.joining]);
+  // Автовход в голос после перезапуска отключён: давал лишние join/replaced и «призрак» в канале.
 
   useEffect(() => {
     if (!token) return undefined;
@@ -3398,7 +3379,16 @@ function App() {
     connection.on(RT.VoicePresenceUpdated, (payload) => {
       const chId = payload?.channelId;
       if (!chId) return;
-      const userIds = (payload.userIds || []).map((x) => String(x)).filter(Boolean);
+      let userIds = (payload.userIds || []).map((x) => String(x)).filter(Boolean);
+      const meId = String(profileRef.current?.id || "");
+      const activeCid = String(activeVoiceChannelIdRef.current || "");
+      if (
+        meId &&
+        String(chId) === activeCid &&
+        (voiceStateRef.current?.connected || voiceStateRef.current?.joining)
+      ) {
+        if (!userIds.includes(meId)) userIds = [...userIds, meId];
+      }
       setVoicePresenceByChannelId((prev) => {
         const key = String(chId);
         const prevEntry = prev[key] || {};
@@ -5606,6 +5596,14 @@ function App() {
           onScreenAudioError: (msg) => {
             try {
               setError(String(msg || ""));
+            } catch {
+              /* ignore */
+            }
+          },
+          onNativeVoiceError: (msg) => {
+            setError(`Голос: ${String(msg || "ошибка native UDP")}`);
+            try {
+              leaveVoice();
             } catch {
               /* ignore */
             }

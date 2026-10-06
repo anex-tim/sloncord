@@ -387,6 +387,7 @@ internal sealed class VoiceSignalingServer
 
         if (isNative)
         {
+            _sessions.CancelGrace(roomId, userId);
             await SendJsonAsync(socket, new { type = "nativeReady", roomId }, ct);
         }
 

@@ -19,6 +19,7 @@ export type NativeVoiceSessionOptions = {
   onForceLeave: () => void;
   onVoiceMove?: (channelId: string) => void;
   onScreenAudioError?: (msg: string) => void;
+  onNativeVoiceError?: (msg: string) => void;
 };
 
 type SloncordNativeVoiceBridge = {
@@ -272,7 +273,9 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
         speaking = !!d.speaking;
       }) ?? null;
       unsubError = bridge()?.onNativeVoiceError?.((msg) => {
-        voiceFsm.transition("degraded", String(msg || "native_error"));
+        const text = String(msg || "native_error");
+        voiceFsm.transition("degraded", text);
+        opts.onNativeVoiceError?.(text);
       }) ?? null;
       unsubRemoteVideo =
         bridge()?.onNativeRemoteVideo?.(({ sessionId, jpegBase64 }) => {
