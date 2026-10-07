@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld("sloncord", {
     ipcRenderer.invoke("sloncord:take-display-selection"),
   startNativeScreenAudio: (
     selection?: { tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null
-  ): Promise<{ ok: boolean; error?: string }> =>
+  ): Promise<{ ok: boolean; error?: string; warning?: string }> =>
     ipcRenderer.invoke("sloncord:start-native-screen-audio", selection ?? undefined),
   stopNativeScreenAudio: (): Promise<{ ok: boolean }> => ipcRenderer.invoke("sloncord:stop-native-screen-audio"),
   getNativeScreenAudioDetail: (): Promise<string> => ipcRenderer.invoke("sloncord:native-screen-audio-detail"),

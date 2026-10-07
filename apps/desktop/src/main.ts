@@ -575,6 +575,7 @@ type NativeScreenAudioStartResult =
       excludeRootPid?: number;
       format?: { sampleRate: number; channels: number; bitsPerSample: number; formatTag: number };
       detail?: string;
+      warning?: string;
     }
   | { ok: false; error: string };
 
@@ -1287,7 +1288,11 @@ ipcMain.handle(
       if (!capture) throw lastErr instanceof Error ? lastErr : new Error("Не удалось начать захват системного звука.");
       attachCapture(capture);
       const detail = screenAudioHelperDetail();
-      return { ok: true, captureMode: capture.captureMode, excludeRootPid: capture.excludeRootPid, format: undefined, detail };
+      // В сеансе удалённого рабочего стола звук уходит в «Remote Audio», а оно не отдаёт звук для записи.
+      const warning = /^rdp-/i.test(String(process.env.SESSIONNAME || ""))
+        ? "Sloncord запущен через удалённый рабочий стол (RDP). Windows не даёт записывать звук в таком сеансе, поэтому зрители получат тишину. Запустите демонстрацию прямо на компьютере или включите в RDP «Воспроизводить на удалённом компьютере»."
+        : undefined;
+      return { ok: true, captureMode: capture.captureMode, excludeRootPid: capture.excludeRootPid, format: undefined, detail, warning };
     } catch (e) {
       stopNativeScreenAudioInternal();
       return { ok: false, error: e instanceof Error ? e.message : "Неизвестная ошибка запуска native audio." };

@@ -58,7 +58,7 @@ type SloncordNativeVoiceBridge = {
   setDisplayCaptureLive?: (live: boolean) => Promise<{ ok: boolean }>;
   startNativeScreenAudio?: (
     selection?: { tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null
-  ) => Promise<{ ok: boolean; error?: string }>;
+  ) => Promise<{ ok: boolean; error?: string; warning?: string }>;
   stopNativeScreenAudio?: () => Promise<{ ok: boolean }>;
   getNativeScreenAudioDetail?: () => Promise<string>;
   getAppVersion?: () => Promise<string>;
@@ -490,6 +490,8 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
           opts.onScreenAudioError?.(
             audioRes.error || "Системный звук демонстрации не запустился. Видео идёт без звука."
           );
+        } else if (audioRes?.warning) {
+          opts.onScreenAudioError?.(audioRes.warning);
         }
       }).catch(() => {});
     }
