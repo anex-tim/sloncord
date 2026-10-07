@@ -280,28 +280,62 @@ static bool init_with_fixed_format(IAudioClient* client, DWORD flags, REFERENCE_
   return true;
 }
 
+static bool init_process_client(IAudioClient* client, DWORD flags, bool fixedPcm, REFERENCE_TIME dur, Capture& result) {
+  WAVEFORMATEX* mix = nullptr;
+  if (fixedPcm) {
+    mix = alloc_pcm16_stereo_48k();
+    if (!mix) return false;
+  } else {
+    HRESULT hr = client->GetMixFormat(&mix);
+    if (FAILED(hr) || !mix) return false;
+  }
+  HRESULT hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, dur, 0, mix, nullptr);
+  if (FAILED(hr)) {
+    log_hr("IAudioClient.Initialize", hr);
+    CoTaskMemFree(mix);
+    return false;
+  }
+  if (!bind_capture_client(client, mix, result)) {
+    CoTaskMemFree(mix);
+    return false;
+  }
+  return true;
+}
+
 static bool init_process_loopback_mode(DWORD targetPid, PROCESS_LOOPBACK_MODE mode, Capture& result) {
-  const DWORD flagSets[] = {
-    AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-    AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+  struct Attempt {
+    const char* name;
+    DWORD flags;
+    bool fixedPcm;
+    REFERENCE_TIME dur;
   };
-  bool activated = false;
-  for (DWORD flags : flagSets) {
+  const Attempt attempts[] = {
+    { "mix-loopback", AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, false, 0 },
+    { "mix-evt", AUDCLNT_STREAMFLAGS_EVENTCALLBACK, false, 0 },
+    { "pcm-evt", AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, true, 0 },
+    { "pcm-loopback", AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, true, 0 },
+  };
+  for (const Attempt& a : attempts) {
     HRESULT hr = E_FAIL;
     IAudioClient* client = activate_process_loopback(targetPid, mode, &hr);
     if (!client) {
-      log_hr(activated ? "activate-retry" : "activate", hr);
+      log_hr(a.name, hr);
       return false;
     }
-    activated = true;
-    if (init_with_fixed_format(client, flags, 0, result)) return true;
+    if (init_process_client(client, a.flags, a.fixedPcm, a.dur, result)) {
+      fprintf(stderr, "sloncord-audio capture=%s\n", a.name);
+      return true;
+    }
     client->Release();
   }
 
   HRESULT hr = E_FAIL;
   IAudioClient* client = activate_process_loopback(targetPid, mode, &hr);
   if (!client) return false;
-  if (init_with_audio_client3(client, result)) return true;
+  if (init_with_audio_client3(client, result)) {
+    fprintf(stderr, "sloncord-audio capture=ac3\n");
+    return true;
+  }
   client->Release();
   return false;
 }
@@ -536,7 +570,33 @@ int main(int argc, char** argv) {
   Capture mainCap;
   std::vector<SubtractState> subtractStates;
 
-  if (a.mode == "window") {
+  if (a.mode == "system") {
+    IMMDeviceEnumerator* enumerator = nullptr;
+    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&enumerator);
+    if (FAILED(hr) || !enumerator) {
+      if (avrt) AvRevertMmThreadCharacteristics(avrt);
+      CoUninitialize();
+      CloseHandle(pipe);
+      return 7;
+    }
+    IMMDevice* device = nullptr;
+    hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
+    enumerator->Release();
+    if (FAILED(hr) || !device) {
+      if (avrt) AvRevertMmThreadCharacteristics(avrt);
+      CoUninitialize();
+      CloseHandle(pipe);
+      return 7;
+    }
+    if (!init_loopback_default(device, mainCap)) {
+      device->Release();
+      if (avrt) AvRevertMmThreadCharacteristics(avrt);
+      CoUninitialize();
+      CloseHandle(pipe);
+      return 9;
+    }
+    device->Release();
+  } else if (a.mode == "window") {
     if (!a.targetPid && a.targetHwnd) {
       DWORD pid = 0;
       GetWindowThreadProcessId((HWND)(uintptr_t)a.targetHwnd, &pid);

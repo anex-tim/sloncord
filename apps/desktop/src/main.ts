@@ -1124,12 +1124,11 @@ ipcMain.handle(
         excludeRootPid: number
       ) {
         const pipe = `\\\\.\\pipe\\sloncord-audio-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
-        const args: string[] = ["--pipe", pipe, "--mode", mode === "screen-dual" ? "screen-dual" : "screen"];
-        if (mode === "exclude-tree" || mode === "screen-dual") {
-          args.push("--excludeTargetPid", String(excludeRootPid));
-        } else {
-          for (const pid of getSloncordProcessPids()) args.push("--excludePid", String(pid));
-        }
+        // Process-loopback EXCLUDE на этой Windows отдаёт тишину. Обычный loopback устройства
+        // захватывает звук других программ.
+        const args: string[] = ["--pipe", pipe, "--mode", "system"];
+        void mode;
+        void excludeRootPid;
         const proc = spawn(helperPath, args, { windowsHide: true, stdio: "ignore" });
         const reader = await connectNamedPipeReadStream(pipe);
         return { proc, reader, pipe };
@@ -1197,7 +1196,7 @@ ipcMain.handle(
             return;
           }
           if (cur.leftover.length < 4 + len) return;
-          const payload = cur.leftover.subarray(4, 4 + len);
+          const payload = Buffer.from(cur.leftover.subarray(4, 4 + len));
           cur.leftover = cur.leftover.subarray(4 + len);
           forwardScreenPcmToNativeVoice(payload);
 

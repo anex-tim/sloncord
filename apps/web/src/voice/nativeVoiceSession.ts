@@ -507,7 +507,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
         }) ?? null;
       unsubScreenPcm =
         bridge()?.onNativeScreenAudio?.((ab) => {
-          if (destroyed || !screenSharing || !ab || ab.byteLength < 4 || ab.byteLength > 64 * 1024) return;
+          if (destroyed || !screenSharing || !ab || ab.byteLength < 4 || ab.byteLength > 256 * 1024) return;
           const b64 = bytesToBase64(new Uint8Array(ab));
           if (!b64 || b64.length > 100_000) return;
           sendPresence({ type: "screenAudio", roomId: opts.roomId, payload: b64 });
