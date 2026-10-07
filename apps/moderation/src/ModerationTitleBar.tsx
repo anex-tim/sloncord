@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
+import {
+  fetchModerationReleaseFromGithub,
+  pickNewestModerationRelease,
+  type ModerationReleaseMeta,
+} from "./moderationGithubRelease";
 
 type ReleaseMeta = {
   version?: string;
@@ -6,10 +11,13 @@ type ReleaseMeta = {
 };
 
 const FIRST_POLL_DELAY_MS = 900;
+const POLL_INTERVAL_MS = 5 * 60 * 1000;
+const STARTUP_RETRY_DELAYS_MS = [8000, 45000];
+export const MODERATION_RELEASE_CHECK_EVENT = "slonmod:release-check";
 
 function isRemoteVersionNewer(remote: string, local: string): boolean {
-  const pa = remote.split(".").map((x) => parseInt(x, 10));
-  const pb = local.split(".").map((x) => parseInt(x, 10));
+  const pa = remote.replace(/^v/i, "").split(".").map((x) => parseInt(x, 10));
+  const pb = local.replace(/^v/i, "").split(".").map((x) => parseInt(x, 10));
   const n = Math.max(pa.length, pb.length);
   for (let i = 0; i < n; i += 1) {
     const a = Number.isFinite(pa[i]) ? pa[i] : 0;
@@ -84,32 +92,76 @@ export function ModerationTitleBar() {
 
     let cancelled = false;
 
-    async function poll(): Promise<void> {
+    async function poll(signal: AbortSignal): Promise<void> {
       if (cancelled) return;
       try {
-        const data = (await window.slonmod?.fetchRelease?.()) as ReleaseMeta | null;
-        if (!data || cancelled) return;
-        const rv = String(data?.version ?? "").trim();
-        const du = String(data?.downloadUrl ?? "").trim();
+        const candidates: ModerationReleaseMeta[] = [];
+        try {
+          const fromMain = (await window.slonmod?.fetchRelease?.()) as ReleaseMeta | null;
+          if (fromMain?.version && fromMain?.downloadUrl) candidates.push(fromMain);
+        } catch {
+          /* ignore */
+        }
+        try {
+          const fromRenderer = await fetchModerationReleaseFromGithub(signal);
+          if (fromRenderer?.version && fromRenderer?.downloadUrl) candidates.push(fromRenderer);
+        } catch {
+          /* ignore */
+        }
+        const data = pickNewestModerationRelease(candidates);
+        if (cancelled || !data) return;
+        const rv = String(data.version ?? "").trim();
+        const du = String(data.downloadUrl ?? "").trim();
         if (!rv || !du.startsWith("http")) return;
         setRemoteVersion(rv);
         setDownloadUrl(du);
       } catch {
-        /* offline */
+        /* offline / abort */
       }
     }
 
-    const t0 = window.setTimeout(() => void poll(), FIRST_POLL_DELAY_MS);
+    function runOnePoll(): void {
+      if (cancelled) return;
+      const ac = new AbortController();
+      const timer = window.setTimeout(() => {
+        try {
+          ac.abort();
+        } catch {
+          /* ignore */
+        }
+      }, 15000);
+      void poll(ac.signal).finally(() => {
+        try {
+          clearTimeout(timer);
+        } catch {
+          /* ignore */
+        }
+      });
+    }
+
+    const t0 = window.setTimeout(runOnePoll, FIRST_POLL_DELAY_MS);
+    const startupRetryTimers = STARTUP_RETRY_DELAYS_MS.map((delay) => window.setTimeout(runOnePoll, delay));
+    const intervalId = window.setInterval(runOnePoll, POLL_INTERVAL_MS);
     const onVisible = (): void => {
-      if (document.visibilityState === "visible") void poll();
+      if (document.visibilityState === "visible") runOnePoll();
+    };
+    const onFocus = (): void => {
+      runOnePoll();
+    };
+    const onReleaseCheck = (): void => {
+      runOnePoll();
     };
     document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", onVisible);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener(MODERATION_RELEASE_CHECK_EVENT, onReleaseCheck);
     return () => {
       cancelled = true;
       clearTimeout(t0);
+      clearInterval(intervalId);
+      for (const id of startupRetryTimers) clearTimeout(id);
       document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", onVisible);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener(MODERATION_RELEASE_CHECK_EVENT, onReleaseCheck);
     };
   }, [electron, localVersion]);
 

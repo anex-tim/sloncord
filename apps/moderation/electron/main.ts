@@ -339,9 +339,29 @@ async function fetchModerationReleaseFromGithub(): Promise<{
     seen.add(repo);
     const candidates: { version: string; downloadUrl: string; available: boolean; size?: number }[] = [];
     try {
+      const mRes = await fetch(
+        `https://raw.githubusercontent.com/${repo}/main/releases/moderation-release.json?t=${Date.now()}`,
+        { headers: { "User-Agent": "Sloncord-Moderation" } }
+      );
+      if (mRes.ok) {
+        const j = (await mRes.json()) as {
+          version?: string;
+          downloadUrl?: string;
+          available?: boolean;
+          size?: number;
+        };
+        const version = normalizeModVersion(String(j?.version || ""));
+        const downloadUrl = String(j?.downloadUrl || "").trim();
+        if (version && downloadUrl && j?.available !== false) {
+          candidates.push({ version, downloadUrl, available: true, size: j.size });
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
       const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
         headers,
-        cache: "no-store",
       });
       if (res.ok) {
         const data = (await res.json()) as {
@@ -355,39 +375,17 @@ async function fetchModerationReleaseFromGithub(): Promise<{
       /* ignore */
     }
     try {
-      const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=20`, {
+      const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=30`, {
         headers,
-        cache: "no-store",
       });
       if (res.ok) {
         const list = (await res.json()) as {
           tag_name?: string;
           assets?: { name?: string; browser_download_url?: string; size?: number }[];
         }[];
-        for (const item of list || []) {
+        if (Array.isArray(list)) for (const item of list) {
           const meta = metaFromGhRelease(item);
           if (meta) candidates.push(meta);
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-    try {
-      const mRes = await fetch(
-        `https://raw.githubusercontent.com/${repo}/main/releases/moderation-release.json?t=${Date.now()}`,
-        { headers: { "User-Agent": "Sloncord-Moderation" }, cache: "no-store" }
-      );
-      if (mRes.ok) {
-        const j = (await mRes.json()) as {
-          version?: string;
-          downloadUrl?: string;
-          available?: boolean;
-          size?: number;
-        };
-        const version = normalizeModVersion(String(j?.version || ""));
-        const downloadUrl = String(j?.downloadUrl || "").trim();
-        if (version && downloadUrl && j?.available !== false) {
-          candidates.push({ version, downloadUrl, available: true, size: j.size });
         }
       }
     } catch {

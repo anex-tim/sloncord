@@ -1,7 +1,7 @@
 {
   "name": "@sloncord/moderation",
   "private": true,
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "Sloncord platform moderation (Electron)",
   "author": "Sloncord",
   "main": "dist-electron/main.cjs",
@@ -13,9 +13,9 @@
     "start": "npm run compile && electron .",
     "dev": "cross-env SLONMOD_USE_VITE=1 npm run compile && cross-env SLONMOD_USE_VITE=1 electron .",
     "build:ui": "vite build",
-    "build": "npm run build:ui && npm run copy-ui && npm run compile && node ./scripts/electron-builder-win.mjs --win && node scripts/publish-to-web.mjs",
+    "build": "npm run build:ui && npm run copy-ui && npm run compile && node ./scripts/electron-builder-win.mjs --win",
     "publish-web": "node scripts/publish-to-web.mjs",
-    "prebuild": "node ./scripts/prepare-icon.mjs && node ./scripts/ensure-builder-deps.mjs",
+    "prebuild": "node ./scripts/ensure-builder-deps.mjs",
     "build:dir": "npm run build:ui && npm run copy-ui && npm run compile && node ./scripts/electron-builder-win.mjs --win --dir"
   },
   "dependencies": {
@@ -85,7 +85,8 @@
       "installerIcon": "resources/app-icon.ico",
       "uninstallerIcon": "resources/app-icon.ico",
       "include": "installer.nsh",
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "differentialPackage": false
     },
     "compression": "normal"
   }

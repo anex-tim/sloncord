@@ -6,7 +6,7 @@
  * asset Sloncord-Moderation-Setup-x64.exe, тег vX.Y.Z, --latest,
  * releases/moderation-release.json: version, available, fileName, downloadUrl, size, githubRepo.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, copyFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -45,14 +45,36 @@ function run(cmd, args) {
   if (r.status !== 0) process.exit(r.status ?? 1);
 }
 
+function findBuiltInstaller() {
+  const modRoot = path.join(root, "apps", "moderation");
+  const marker = path.join(modRoot, "release", ".slonmod-last-pack-dir");
+  let dir = "";
+  if (existsSync(marker)) {
+    const p = readFileSync(marker, "utf8").trim();
+    if (p && existsSync(p)) dir = p;
+  }
+  if (!dir) {
+    console.error("Не найден каталог сборки moderation (release/.slonmod-last-pack-dir).");
+    process.exit(1);
+  }
+  const exes = readdirSync(dir).filter(
+    (name) => /\.exe$/i.test(name) && !/uninstall/i.test(name) && !/blockmap/i.test(name)
+  );
+  if (!exes.length) {
+    console.error(`В ${dir} нет установщика .exe`);
+    process.exit(1);
+  }
+  exes.sort((a, b) => statSync(path.join(dir, b)).mtimeMs - statSync(path.join(dir, a)).mtimeMs);
+  const src = path.join(dir, exes[0]);
+  const dest = path.join(dir, installerName);
+  if (path.resolve(src) !== path.resolve(dest)) copyFileSync(src, dest);
+  return dest;
+}
+
 console.log(`→ Сборка Sloncord Moderation ${version}…`);
 run("npm", ["run", "build", "-w", "@sloncord/moderation"]);
 
-const installerPath = path.join(root, "apps", "web", "public", "downloads", installerName);
-if (!existsSync(installerPath)) {
-  console.error(`Не найден ${installerPath}`);
-  process.exit(1);
-}
+const installerPath = findBuiltInstaller();
 
 const tag = version.startsWith("v") ? version : `v${version}`;
 const manifestDir = path.join(root, "apps", "moderation", "releases");
@@ -69,6 +91,10 @@ const meta = {
   githubRepo: repo,
 };
 writeFileSync(manifestPath, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+const webManifest = path.join(root, "apps", "web", "public", "downloads", "moderation-release.json");
+if (existsSync(path.dirname(webManifest))) {
+  writeFileSync(webManifest, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+}
 
 console.log(`→ GitHub Release ${tag} (${repo})…`);
 const viewOk = spawnSync(ghBin, ["release", "view", tag, "--repo", repo], {
