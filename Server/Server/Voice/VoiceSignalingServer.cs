@@ -23,6 +23,7 @@ internal sealed class VoiceSignalingServer
     private readonly Dictionary<WebSocket, (Guid UserId, string RoomId)> _socketMap = new();
     private readonly Dictionary<WebSocket, string> _socketMode = new();
     private readonly ConcurrentDictionary<WebSocket, SemaphoreSlim> _sendLocks = new();
+    private readonly Dictionary<Guid, (int Count, int Targets)> _screenAudioRelayed = new();
     private int _screenFrameRelays;
     private readonly SloncordRealtime _realtime;
     private readonly VoiceGatewayService _gateway;
@@ -228,6 +229,20 @@ internal sealed class VoiceSignalingServer
                         if (string.IsNullOrWhiteSpace(msg.RoomId) || string.IsNullOrWhiteSpace(msg.Payload)) continue;
                         if (msg.Payload.Length > 120_000) continue;
                         _ = RelayScreenAudioAsync(userId, CanonicalRoomId(msg.RoomId), msg.Payload, socket, CancellationToken.None);
+                    }
+                    else if (msg.Type == "screenAudioStat")
+                    {
+                        var stat = (msg.Payload ?? "").Replace('\n', ' ').Replace('\r', ' ');
+                        if (stat.Length > 300) stat = stat[..300];
+                        int relayed, relayTargets;
+                        lock (_sync)
+                        {
+                            _screenAudioRelayed.TryGetValue(userId, out var r);
+                            relayed = r.Count;
+                            relayTargets = r.Targets;
+                            _screenAudioRelayed.Remove(userId);
+                        }
+                        Console.WriteLine($"sloncord screen-audio user={userId:D} relayed={relayed} targets={relayTargets} {stat}");
                     }
                     else if (msg.Type == "setUserFlags")
                     {
@@ -1031,6 +1046,11 @@ internal sealed class VoiceSignalingServer
                     if (peer.State == WebSocketState.Open) targets.Add(peer);
                 }
             }
+        }
+        lock (_sync)
+        {
+            _screenAudioRelayed.TryGetValue(userId, out var r);
+            _screenAudioRelayed[userId] = (r.Count + 1, targets.Count);
         }
         if (targets.Count == 0) return;
         var msg = new { type = "screenAudio", userId = userId.ToString("D"), pcm = pcmBase64 };

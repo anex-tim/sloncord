@@ -1033,6 +1033,7 @@ function App() {
     profile?.id
   ]);
   const [screenView, setScreenView] = useState({ open: false, peerId: "", mode: "full" }); // mode: full | window
+  const screenAudioPctRef = useRef(100);
   const [screenWindowPos, setScreenWindowPos] = useState(() => ({ x: 0, y: 0, inited: false }));
   const screenDragRef = useRef({ active: false, startX: 0, startY: 0, baseX: 0, baseY: 0, pointerId: 0 });
   const screenOverlayRef = useRef(null);
@@ -1505,6 +1506,15 @@ function App() {
   useEffect(() => {
     voiceStateRef.current = voiceState;
   }, [voiceState]);
+  // Новая голосовая сессия (переподключение, повторный вход) не знает, чью демонстрацию слушать.
+  useEffect(() => {
+    if (!screenView.open || !screenView.peerId || !voiceState.connected) return;
+    try {
+      voiceRef.current?.setScreenAudioVolume?.(String(screenView.peerId), screenAudioPctRef.current);
+    } catch {
+      /* ignore */
+    }
+  }, [screenView.open, screenView.peerId, voiceState.connected, voiceState.room]);
   useEffect(() => {
     activeVoiceChannelIdRef.current = String(activeVoiceChannelId || "");
   }, [activeVoiceChannelId]);
@@ -6310,6 +6320,7 @@ function App() {
     const pid = String(peerId);
     const safe = pid.replace(/[^a-f0-9-]/gi, "x");
     setScreenView({ open: true, peerId: pid, mode: "full" });
+    screenAudioPctRef.current = 100;
     try { voiceRef.current?.setScreenAudioVolume?.(pid, 100); } catch { /* ignore */ }
     try {
       voiceRef.current?.ensurePeerFor?.(pid);
@@ -11171,6 +11182,7 @@ function App() {
                   defaultValue="100"
                   onChange={(e) => {
                     const v = Math.max(0, Math.min(300, Number(e.target.value) || 0));
+                    screenAudioPctRef.current = v;
                     try { voiceRef.current?.setScreenAudioVolume?.(String(screenView.peerId), v); } catch { /* ignore */ }
                   }}
                   title="Громкость звука демонстрации"

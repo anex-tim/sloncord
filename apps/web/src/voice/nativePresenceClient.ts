@@ -39,9 +39,9 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
 
   function send(obj: Record<string, unknown>) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (obj.type === "screenFrame" || obj.type === "screenAudio") {
-      if (ws.bufferedAmount > 250_000) return;
-    }
+    // Кадр пропускаем, пока не ушёл предыдущий, — так в очереди остаётся место для звука и ping.
+    if (obj.type === "screenFrame" && ws.bufferedAmount > 400_000) return;
+    if (obj.type === "screenAudio" && ws.bufferedAmount > 4_000_000) return;
     try {
       ws.send(JSON.stringify(obj));
     } catch {

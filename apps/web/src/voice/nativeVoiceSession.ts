@@ -93,6 +93,9 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
   const serverSessionByUser = new Map<string, number>();
   let watchedScreenUserId = "";
   let screenListenGain = 1;
+  let screenPcmPending: Uint8Array[] = [];
+  let screenPcmPendingBytes = 0;
+  const screenAudioStats = { captured: 0, peak: 0, sent: 0, received: 0, played: 0, skipped: 0 };
   let screenStream: MediaStream | null = null;
   let screenCaptureTimer: ReturnType<typeof setInterval> | null = null;
   let screenVideoEl: HTMLVideoElement | null = null;
@@ -174,6 +177,23 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     return btoa(binary);
   }
 
+  function flushScreenPcm() {
+    if (screenPcmPendingBytes <= 0) return;
+    const all = new Uint8Array(screenPcmPendingBytes);
+    let off = 0;
+    for (const c of screenPcmPending) {
+      all.set(c, off);
+      off += c.byteLength;
+    }
+    screenPcmPending = [];
+    screenPcmPendingBytes = 0;
+    if (destroyed || !screenSharing) return;
+    const b64 = bytesToBase64(all);
+    if (!b64 || b64.length > 100_000) return;
+    screenAudioStats.sent += 1;
+    sendPresence({ type: "screenAudio", roomId: opts.roomId, payload: b64 });
+  }
+
   async function setWatchScreen(userId: string) {
     const id = String(userId || "");
     watchedScreenUserId = id;
@@ -205,8 +225,12 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       showRemoteFrame(String(userId), String(jpegBase64));
     },
     onScreenAudio: (userId, pcmBase64) => {
-      if (!pcmBase64 || !watchedScreenUserId || screenListenGain <= 0) return;
-      if (!sameVoiceUser(userId, watchedScreenUserId)) return;
+      screenAudioStats.received += 1;
+      if (!pcmBase64 || !watchedScreenUserId || screenListenGain <= 0 || !sameVoiceUser(userId, watchedScreenUserId)) {
+        screenAudioStats.skipped += 1;
+        return;
+      }
+      screenAudioStats.played += 1;
       void bridge()?.playNativeScreenPcm?.(pcmBase64, screenListenGain);
     },
     onRoomRoster: (msg) => {
@@ -304,6 +328,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
 
   function startSpeakingLoop() {
     stopSpeakingLoop();
+    let statTick = 0;
     speakingTimer = setInterval(() => {
       if (destroyed) return;
       sendPresence({
@@ -311,6 +336,21 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
         roomId: opts.roomId,
         speaking,
       });
+      statTick += 1;
+      if (statTick % 6 !== 0) return;
+      const s = screenAudioStats;
+      if (s.captured + s.sent + s.received + s.played + s.skipped === 0 && !screenSharing && !watchedScreenUserId) return;
+      sendPresence({
+        type: "screenAudioStat",
+        roomId: opts.roomId,
+        payload: `captured=${s.captured} peak=${s.peak} sent=${s.sent} received=${s.received} played=${s.played} skipped=${s.skipped} sharing=${screenSharing ? 1 : 0} watch=${watchedScreenUserId || "-"} gain=${screenListenGain}`,
+      });
+      s.captured = 0;
+      s.peak = 0;
+      s.sent = 0;
+      s.received = 0;
+      s.played = 0;
+      s.skipped = 0;
     }, 900);
   }
 
@@ -351,6 +391,8 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
   async function stopScreenShareInternal() {
     const wasSharing = screenSharing;
     screenSharing = false;
+    screenPcmPending = [];
+    screenPcmPendingBytes = 0;
     try {
       void bridge()?.stopNativeScreenAudio?.();
     } catch {
@@ -510,9 +552,18 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       unsubScreenPcm =
         bridge()?.onNativeScreenAudio?.((ab) => {
           if (destroyed || !screenSharing || !ab || ab.byteLength < 4 || ab.byteLength > 256 * 1024) return;
-          const b64 = bytesToBase64(new Uint8Array(ab));
-          if (!b64 || b64.length > 100_000) return;
-          sendPresence({ type: "screenAudio", roomId: opts.roomId, payload: b64 });
+          // Helper отдаёт по 10 мс; копим ~40 мс, чтобы не слать 100 сообщений в секунду.
+          const chunk = new Uint8Array(ab);
+          const view = new DataView(ab);
+          for (let i = 0; i + 1 < chunk.byteLength; i += 16) {
+            const v = Math.abs(view.getInt16(i, true));
+            if (v > screenAudioStats.peak) screenAudioStats.peak = v;
+          }
+          screenAudioStats.captured += 1;
+          if (screenPcmPendingBytes + chunk.byteLength > 64 * 1024) flushScreenPcm();
+          screenPcmPending.push(chunk);
+          screenPcmPendingBytes += chunk.byteLength;
+          if (screenPcmPendingBytes >= 7680) flushScreenPcm();
         }) ?? null;
 
       await presence.connect();

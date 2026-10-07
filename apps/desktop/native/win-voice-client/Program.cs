@@ -7,6 +7,7 @@ using Concentus.Enums;
 using Concentus.Structs;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 using NAudio.Wasapi;
 
 namespace SloncordNativeVoice;
@@ -187,6 +188,8 @@ internal sealed class VoiceRuntime
     private readonly byte[] _silence20ms = new byte[1920];
     private IWavePlayer? _waveOut;
     private BufferedWaveProvider? _playBuffer;
+    private BufferedWaveProvider? _screenPlayBuffer;
+    private IWaveProvider? _outputProvider;
     private OpusEncoder? _encoder;
     private OpusDecoder? _decoder;
     private OpusEncoder? _screenEncoder;
@@ -262,10 +265,21 @@ internal sealed class VoiceRuntime
             BufferDuration = TimeSpan.FromMilliseconds(500),
             DiscardOnBufferOverflow = true
         };
+        // Голос и звук демонстрации в разных буферах и складываются микшером.
+        // В одном буфере они вставали друг за другом, буфер переполнялся и звук демонстрации терялся.
+        _screenPlayBuffer = new BufferedWaveProvider(new WaveFormat(48000, 16, 1))
+        {
+            BufferDuration = TimeSpan.FromMilliseconds(1500),
+            DiscardOnBufferOverflow = true
+        };
+        var mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(48000, 1)) { ReadFully = true };
+        mixer.AddMixerInput(_playBuffer.ToSampleProvider());
+        mixer.AddMixerInput(_screenPlayBuffer.ToSampleProvider());
+        _outputProvider = new SampleToWaveProvider16(mixer);
         _waveOut = CreateOutputDevice(_outputDeviceId);
         try
         {
-            _waveOut.Init(_playBuffer);
+            _waveOut.Init(_outputProvider);
             _waveOut.Play();
         }
         catch
@@ -321,7 +335,8 @@ internal sealed class VoiceRuntime
     /// <summary>s16le stereo 48 kHz from the streamer, played on the selected output.</summary>
     public void PlayScreenStereo(byte[] pcm, double gain)
     {
-        if (Deafened || _playBuffer is null || gain <= 0.0001 || pcm.Length < 4) return;
+        var target = _screenPlayBuffer;
+        if (Deafened || target is null || gain <= 0.0001 || pcm.Length < 4) return;
         var frames = pcm.Length / 4;
         var bytes = new byte[frames * 2];
         var g = (float)gain * _speakerGain;
@@ -334,9 +349,14 @@ internal sealed class VoiceRuntime
             if (m < -32768) m = -32768;
             BinaryPrimitives.WriteInt16LittleEndian(bytes.AsSpan(i * 2), (short)m);
         }
-        lock (_sync)
+        lock (_screenLock)
         {
-            _playBuffer.AddSamples(bytes, 0, bytes.Length);
+            // Пакеты по TCP приходят пачками: небольшой запас, чтобы не было щелчков на пустом буфере.
+            if (target.BufferedDuration > TimeSpan.FromMilliseconds(450))
+                target.ClearBuffer();
+            if (target.BufferedBytes == 0)
+                target.AddSamples(new byte[48 * 80 * 2], 0, 48 * 80 * 2);
+            target.AddSamples(bytes, 0, bytes.Length);
         }
     }
 
@@ -645,7 +665,7 @@ internal sealed class VoiceRuntime
         }
         catch { /* ignore */ }
         _waveOut = CreateOutputDevice(deviceId);
-        _waveOut.Init(_playBuffer);
+        _waveOut.Init(_outputProvider ?? _playBuffer);
         _waveOut.Play();
     }
 
