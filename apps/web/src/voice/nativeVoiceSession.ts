@@ -42,8 +42,11 @@ type SloncordNativeVoiceBridge = {
   setNativeVoiceDeafened?: (deafened: boolean) => Promise<{ ok: boolean }>;
   setNativeVoiceInputDevice?: (deviceId: string) => Promise<{ ok: boolean }>;
   setNativeVoiceOutputDevice?: (deviceId: string) => Promise<{ ok: boolean }>;
+  setNativeVoiceProcessing?: (opts: Record<string, unknown>) => Promise<{ ok: boolean }>;
+  setNativeVoiceMicGain?: (gain: number) => Promise<{ ok: boolean }>;
+  setNativeVoiceSpeakerGain?: (gain: number) => Promise<{ ok: boolean }>;
   sendNativeVideoFrame?: (jpegBase64: string) => Promise<{ ok: boolean }>;
-  onNativeVoiceSpeaking?: (cb: (detail: { speaking: boolean; level: number }) => void) => () => void;
+  onNativeVoiceSpeaking?: (cb: (detail: { speaking: boolean; level: number; threshold?: number }) => void) => () => void;
   onNativeRemoteVideo?: (cb: (detail: { sessionId: number; jpegBase64: string }) => void) => () => void;
   onNativeVoiceError?: (cb: (msg: string) => void) => () => void;
   takeDisplaySelection?: () => Promise<{ tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null>;
@@ -70,6 +73,8 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
   let muted = false;
   let deafened = false;
   let speaking = false;
+  let meter = { rms: 0, threshold: 0.03, open: false };
+  let screenHeartbeat: ReturnType<typeof setInterval> | null = null;
   let lastRoster: string[] = [];
   let speakingTimer: ReturnType<typeof setInterval> | null = null;
   let unsubSpeaking: (() => void) | null = null;
@@ -240,6 +245,13 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
   function publishScreenFlag(enabled: boolean) {
     setState({ sharingScreen: enabled });
     sendPresence({ type: "screenShare", roomId: opts.roomId, enabled });
+    if (screenHeartbeat) clearInterval(screenHeartbeat);
+    screenHeartbeat = null;
+    if (!enabled) return;
+    screenHeartbeat = setInterval(() => {
+      if (destroyed || !screenSharing) return;
+      sendPresence({ type: "screenShare", roomId: opts.roomId, enabled: true });
+    }, 4000);
   }
 
   function stopScreenShareInternal() {
@@ -287,14 +299,6 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     } catch {
       selection = null;
     }
-    if (selection?.withSystemAudio) {
-      const audioRes = await b?.startNativeScreenAudio?.(selection);
-      if (!audioRes?.ok) {
-        opts.onScreenAudioError?.(
-          audioRes?.error || "Системный звук демонстрации не запустился. Видео идёт без звука."
-        );
-      }
-    }
     if (videoTrack.readyState !== "live") {
       try { stream.getTracks?.().forEach((t) => t.stop()); } catch { /* ignore */ }
       throw new Error("Не удалось начать демонстрацию экрана.");
@@ -308,6 +312,15 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     await screenVideoEl.play().catch(() => {});
     screenCanvas = document.createElement("canvas");
     publishScreenFlag(true);
+    if (selection?.withSystemAudio) {
+      void b?.startNativeScreenAudio?.(selection).then((audioRes) => {
+        if (audioRes && !audioRes.ok) {
+          opts.onScreenAudioError?.(
+            audioRes.error || "Системный звук демонстрации не запустился. Видео идёт без звука."
+          );
+        }
+      }).catch(() => {});
+    }
 
     let frameBusy = false;
     let jpegQuality = 0.62;
@@ -352,6 +365,11 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
 
       unsubSpeaking = bridge()?.onNativeVoiceSpeaking?.((d) => {
         speaking = !!d.speaking;
+        meter = {
+          rms: Number(d.level) || 0,
+          threshold: Number(d.threshold) || 0.03,
+          open: !!d.speaking,
+        };
       }) ?? null;
       unsubError = bridge()?.onNativeVoiceError?.((msg) => {
         if (destroyed) return;
@@ -446,7 +464,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     },
 
     getInputMeter() {
-      return { level: speaking ? 0.6 : 0.05, speaking };
+      return meter;
     },
 
     setInputDevice(deviceId: string) {
@@ -459,16 +477,16 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       return Promise.resolve();
     },
 
-    setMicGain(_gain: number) {
-      /* future */
+    setMicGain(gain: number) {
+      void bridge()?.setNativeVoiceMicGain?.(Number(gain) || 0);
     },
 
-    setSpeakerGain(_gain: number) {
-      /* future */
+    setSpeakerGain(gain: number) {
+      void bridge()?.setNativeVoiceSpeakerGain?.(Number(gain) || 0);
     },
 
-    setAudioProcessing(_opts: unknown) {
-      /* native */
+    setAudioProcessing(opts: Record<string, unknown>) {
+      void bridge()?.setNativeVoiceProcessing?.(opts || {});
     },
 
     destroy() {

@@ -864,6 +864,7 @@ ipcMain.handle(
               win.webContents.send("sloncord:native-voice-speaking", {
                 speaking: !!msg.speaking,
                 level: Number(msg.level) || 0,
+                threshold: Number(msg.threshold) || 0.03,
               });
             } else if (msg.type === "remoteVideo" && msg.jpegBase64) {
               win.webContents.send("sloncord:native-remote-video", {
@@ -979,6 +980,33 @@ ipcMain.handle("sloncord:set-native-voice-input-device", async (_e, deviceId: st
   }
 });
 
+ipcMain.handle("sloncord:set-native-voice-processing", async (_e, opts: Record<string, unknown> | null) => {
+  try {
+    nativeVoiceHelper?.proc.stdin?.write(`${JSON.stringify({ cmd: "setAudioProcessing", ...(opts || {}) })}\n`);
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+});
+
+ipcMain.handle("sloncord:set-native-voice-mic-gain", async (_e, gain: number) => {
+  try {
+    nativeVoiceHelper?.proc.stdin?.write(`${JSON.stringify({ cmd: "setMicGain", gain: Number(gain) || 0 })}\n`);
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+});
+
+ipcMain.handle("sloncord:set-native-voice-speaker-gain", async (_e, gain: number) => {
+  try {
+    nativeVoiceHelper?.proc.stdin?.write(`${JSON.stringify({ cmd: "setSpeakerGain", gain: Number(gain) || 0 })}\n`);
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+});
+
 ipcMain.handle("sloncord:set-native-voice-output-device", async (_e, deviceId: string) => {
   try {
     nativeVoiceHelper?.proc.stdin?.write(`${JSON.stringify({ cmd: "setOutputDevice", deviceId: String(deviceId || "") })}\n`);
@@ -1086,7 +1114,7 @@ ipcMain.handle(
         // Вычитание полного микса не используем: из-за рассинхрона зритель слышал сам себя.
         const excludeRootPid = process.pid;
         const started = await spawnScreenAudioHelper("exclude-tree", excludeRootPid);
-        if (await helperProcessFailedQuickly(started.proc, 4000)) {
+        if (await helperProcessFailedQuickly(started.proc, 450)) {
           try {
             started.reader.destroy();
           } catch {

@@ -5776,6 +5776,15 @@ function App() {
         }
         await nativeSession.join();
         if (voiceJoinAborted()) return;
+        try {
+          nativeSession.setInputDevice?.(String(audioSettings.inputDeviceId || ""));
+          nativeSession.setMicGain?.(audioSettings.micGain);
+          nativeSession.setSpeakerGain?.(audioSettings.speakerGain);
+          nativeSession.setAudioProcessing?.(buildVoiceProcessingOpts(audioSettings));
+          nativeSession.setOutputDevice?.(String(audioSettings.outputDeviceId || ""));
+        } catch {
+          /* ignore */
+        }
         voiceStateRef.current = {
           ...(voiceStateRef.current || {}),
           connected: true,
@@ -6209,7 +6218,8 @@ function App() {
         return;
       }
       if (Date.now() - startedAt > timeoutMs) {
-        setError("Демонстрация пока не доступна (нет видеопотока).");
+        const native = typeof voiceRef.current?.isNativeScreenMode === "function" && voiceRef.current.isNativeScreenMode();
+        if (!native) setError("Демонстрация пока не доступна (нет видеопотока).");
         return;
       }
       setTimeout(tick, 250);
@@ -6613,6 +6623,27 @@ function App() {
     const t = setInterval(() => {
       try {
         if (!screenView.open) return;
+        const native = typeof voiceRef.current?.isNativeScreenMode === "function" && voiceRef.current.isNativeScreenMode();
+        if (native) {
+          const url = String(voiceRef.current?.getNativeScreenUrl?.(pid) || "");
+          if (!url) return;
+          const v = screenVideoRef.current;
+          if (v) {
+            try { v.srcObject = null; } catch { /* ignore */ }
+            v.style.display = "none";
+          }
+          let overlayImg = document.getElementById("screen-native-img") as HTMLImageElement | null;
+          if (!overlayImg && screenOverlayRef.current) {
+            overlayImg = document.createElement("img");
+            overlayImg.id = "screen-native-img";
+            overlayImg.className = "screen-video";
+            overlayImg.alt = "";
+            screenOverlayRef.current.querySelector(".screen-surface")?.prepend(overlayImg);
+          }
+          if (overlayImg && overlayImg.src !== url) overlayImg.src = url;
+          stoppedAt = 0;
+          return;
+        }
         const v = screenVideoRef.current;
         const s = v?.srcObject as MediaStream | null;
         const vt = s?.getVideoTracks?.()?.[0] || null;
@@ -6628,7 +6659,7 @@ function App() {
       } catch {
         /* ignore */
       }
-    }, 450);
+    }, 200);
     return () => {
       try { clearInterval(t); } catch { /* ignore */ }
     };
@@ -8099,7 +8130,7 @@ function App() {
 
                 <div className="panel-header--sub" style={{ marginTop: "14px" }}>Голос в канал</div>
                 <p className="muted audio-settings-hint">
-                  Галочки перезахватывают микрофон. Голос в эфир идёт непрерывно — без обрезки фраз посередине.
+                  Настройки сразу применяются к микрофону в голосовом канале.
                 </p>
 
                 <div style={{ display: "grid", gap: "10px" }}>
@@ -8118,7 +8149,7 @@ function App() {
                       checked={!!audioSettings.noiseSuppression}
                       onChange={(e) => patchAudioSettings({ noiseSuppression: !!e.target.checked })}
                     />
-                    <span>Шумоподавление (браузер)</span>
+                    <span>Шумоподавление</span>
                   </label>
 
                   <label className="audio-settings-check">
@@ -8747,7 +8778,7 @@ function App() {
                 : new Set((presence?.screenShareUserIds || []).map((x) => String(x)).filter(Boolean));
               const others = (isConnectedHere ? ids : presenceIds).filter((x) => x && x !== meId);
               const meSpeaking = isUserSpeakingInVoice(meId, pid);
-              const meSharing = sharers.has(String(meId));
+              const meSharing = sharers.has(String(meId)) || !!voiceState.sharingScreen;
               return (
                 <div className="dm-voice-roster-inline__inner">
                   <div className="panel-header--sub" style={{ paddingTop: 0 }}>Звонок</div>
@@ -9548,7 +9579,7 @@ function App() {
                 : new Set((presence?.screenShareUserIds || []).map((x) => String(x)).filter(Boolean));
               const others = (isConnectedHere ? ids : presenceIds).filter((x) => x && x !== meId);
               const meSpeaking = isUserSpeakingInVoice(meId, pid);
-              const meSharing = sharers.has(String(meId));
+              const meSharing = sharers.has(String(meId)) || !!voiceState.sharingScreen;
               return (
                 <>
                   <div className="panel-header--sub" style={{ paddingTop: 0 }}>Голос</div>

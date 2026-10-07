@@ -81,6 +81,26 @@ internal static class Program
             continue;
         }
 
+        if (cmd == "setMicGain" && runtime is not null)
+        {
+            var gain = doc.RootElement.TryGetProperty("gain", out var gEl) ? gEl.GetDouble() : 100;
+            runtime.SetMicGain(gain);
+            continue;
+        }
+
+        if (cmd == "setSpeakerGain" && runtime is not null)
+        {
+            var gain = doc.RootElement.TryGetProperty("gain", out var gEl) ? gEl.GetDouble() : 100;
+            runtime.SetSpeakerGain(gain);
+            continue;
+        }
+
+        if (cmd == "setAudioProcessing" && runtime is not null)
+        {
+            runtime.SetAudioProcessing(doc.RootElement);
+            continue;
+        }
+
         if (cmd == "videoFrame" && runtime is not null)
         {
             var b64 = doc.RootElement.TryGetProperty("jpegBase64", out var jEl) ? jEl.GetString() : null;
@@ -158,6 +178,29 @@ internal sealed class VoiceRuntime
 
     public bool Muted { get; set; }
     public bool Deafened { get; set; }
+    private bool _echoCancellation = true;
+    private bool _noiseSuppression = true;
+    private int _noiseLevel = 40;
+    private bool _autoSensitivity = true;
+    private int _sensitivity = 50;
+    private float _micGain = 1f;
+    private float _speakerGain = 1f;
+    private float _hpX;
+    private float _hpY;
+    private float _noiseFloor = 0.012f;
+    private long _lastMeterTick;
+    private bool _lastMeterSpeaking;
+
+    private void EmitMeter(double rms, double threshold, bool speaking)
+    {
+        var now = Environment.TickCount64;
+        if (now - _lastMeterTick < 80 && speaking == _lastMeterSpeaking) return;
+        _lastMeterTick = now;
+        _lastMeterSpeaking = speaking;
+        _emit(new { type = "speaking", speaking, level = rms, threshold });
+    }
+    private readonly short[] _echoRing = new short[48000];
+    private int _echoWrite;
     private string? _inputDeviceId;
     private string? _outputDeviceId;
     private int _inputDeviceIndex;
@@ -249,6 +292,101 @@ internal sealed class VoiceRuntime
         }
     }
 
+    public void SetMicGain(double percent)
+    {
+        _micGain = Math.Clamp((float)(percent / 100.0), 0f, 2f);
+    }
+
+    public void SetSpeakerGain(double percent)
+    {
+        _speakerGain = Math.Clamp((float)(percent / 100.0), 0f, 2f);
+    }
+
+    public void SetAudioProcessing(JsonElement root)
+    {
+        if (root.TryGetProperty("echoCancellation", out var ec)) _echoCancellation = ec.GetBoolean();
+        if (root.TryGetProperty("noiseSuppression", out var ns)) _noiseSuppression = ns.GetBoolean();
+        if (root.TryGetProperty("noiseSuppressionLevel", out var lvl) && lvl.ValueKind == JsonValueKind.Number)
+            _noiseLevel = (int)Math.Clamp(lvl.GetDouble(), 0, 100);
+        if (root.TryGetProperty("inputSensitivityAuto", out var auto)) _autoSensitivity = auto.GetBoolean();
+        if (root.TryGetProperty("inputSensitivity", out var sens) && sens.ValueKind == JsonValueKind.Number)
+            _sensitivity = (int)Math.Clamp(sens.GetDouble(), 0, 100);
+        if (root.TryGetProperty("micGain", out var mg) && mg.ValueKind == JsonValueKind.Number)
+            SetMicGain(mg.GetDouble());
+    }
+
+    private short ProcessMicSample(short raw)
+    {
+        var x = raw * _micGain;
+        var y = 0.96f * (_hpY + x - _hpX);
+        _hpX = x;
+        _hpY = y;
+        if (y > 32767f) y = 32767f;
+        if (y < -32768f) y = -32768f;
+        return (short)y;
+    }
+
+    private void RememberEcho(short[] pcm, int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            _echoRing[_echoWrite] = pcm[i];
+            _echoWrite++;
+            if (_echoWrite >= _echoRing.Length) _echoWrite = 0;
+        }
+    }
+
+    private void CancelEcho(short[] mic, int samples)
+    {
+        if (!_echoCancellation || samples < 160) return;
+        var best = 0;
+        var bestLag = 480; // ~10 ms
+        for (var lagMs = 0; lagMs <= 80; lagMs += 10)
+        {
+            var lag = 48 * lagMs;
+            if (lag <= 0) lag = 48;
+            var dot = 0;
+            var n = Math.Min(160, samples);
+            for (var i = 0; i < n; i++)
+            {
+                var idx = _echoWrite - lag - (n - i);
+                while (idx < 0) idx += _echoRing.Length;
+                dot += mic[i] * _echoRing[idx % _echoRing.Length];
+            }
+            if (dot > best)
+            {
+                best = dot;
+                bestLag = lag;
+            }
+        }
+        if (best < 2_000_000) return;
+        for (var i = 0; i < samples; i++)
+        {
+            var idx = _echoWrite - bestLag - (samples - i);
+            while (idx < 0) idx += _echoRing.Length;
+            var echo = _echoRing[idx % _echoRing.Length];
+            var v = mic[i] - (int)(echo * 0.55f);
+            if (v > 32767) v = 32767;
+            if (v < -32768) v = -32768;
+            mic[i] = (short)v;
+        }
+    }
+
+    private void SuppressNoise(short[] mic, int samples)
+    {
+        if (!_noiseSuppression || _noiseLevel <= 0) return;
+        double energy = 0;
+        for (var i = 0; i < samples; i++) energy += mic[i] * (double)mic[i];
+        var rms = Math.Sqrt(energy / Math.Max(1, samples)) / 32768.0;
+        var strength = _noiseLevel / 100f;
+        var gate = _noiseFloor * (1.2f + strength * 3.5f);
+        if (rms < gate)
+        {
+            var keep = Math.Max(0.04f, 1f - strength);
+            for (var i = 0; i < samples; i++) mic[i] = (short)(mic[i] * keep);
+        }
+    }
+
     private void OnCapture(byte[] buffer, int count)
     {
         if (_encoder is null || _udp is null || _remote is null) return;
@@ -258,21 +396,48 @@ internal sealed class VoiceRuntime
         PullScreen(screen);
         var screenEnergy = 0;
         for (var i = 0; i < samples; i++) screenEnergy = Math.Max(screenEnergy, Math.Abs(screen[i]));
-        if (Muted && screenEnergy == 0) return;
+        if (Muted && screenEnergy == 0)
+        {
+            EmitMeter(0, _noiseFloor, false);
+            return;
+        }
 
-        var micPeak = 0;
+        var mic = new short[samples];
+        double energy = 0;
         for (var i = 0; i < samples; i++)
         {
-            var mic = Muted ? (short)0 : BitConverter.ToInt16(buffer, i * 2);
-            if (!Muted) micPeak = Math.Max(micPeak, Math.Abs(mic));
-            var mixed = mic + screen[i];
+            var s = Muted ? (short)0 : ProcessMicSample(BitConverter.ToInt16(buffer, i * 2));
+            mic[i] = s;
+            energy += s * (double)s;
+        }
+        var rms = Math.Sqrt(energy / samples) / 32768.0;
+        if (rms < _noiseFloor * 1.6) _noiseFloor = (float)(_noiseFloor * 0.96 + rms * 0.04);
+        else _noiseFloor = (float)(_noiseFloor * 0.995 + rms * 0.005);
+        if (_noiseFloor < 0.003f) _noiseFloor = 0.003f;
+        if (_noiseFloor > 0.08f) _noiseFloor = 0.08f;
+
+        if (!Muted)
+        {
+            CancelEcho(mic, samples);
+            SuppressNoise(mic, samples);
+            energy = 0;
+            for (var i = 0; i < samples; i++) energy += mic[i] * (double)mic[i];
+            rms = Math.Sqrt(energy / samples) / 32768.0;
+        }
+
+        var threshold = _autoSensitivity
+            ? Math.Max(0.01, _noiseFloor * 2.4)
+            : 0.006 + (_sensitivity / 100.0) * 0.09;
+        var speakingNow = !Muted && rms > threshold;
+        EmitMeter(rms, threshold, speakingNow);
+
+        for (var i = 0; i < samples; i++)
+        {
+            var mixed = mic[i] + screen[i];
             if (mixed > 32767) mixed = 32767;
             if (mixed < -32768) mixed = -32768;
             _pcmQueue.Add((short)mixed);
         }
-
-        var level = Math.Min(1.0, micPeak / 8000.0);
-        _emit(new { type = "speaking", speaking = !Muted && level > 0.02, level });
 
         const int frameSize = 960;
         while (_pcmQueue.Count >= frameSize)
@@ -308,6 +473,17 @@ internal sealed class VoiceRuntime
             var pcm = new short[960 * 6];
             var decoded = _decoder.Decode(payload, 0, payload.Length, pcm, 0, pcm.Length, false);
             if (decoded <= 0) continue;
+            if (Math.Abs(_speakerGain - 1f) > 0.01f)
+            {
+                for (var i = 0; i < decoded; i++)
+                {
+                    var v = (int)(pcm[i] * _speakerGain);
+                    if (v > 32767) v = 32767;
+                    if (v < -32768) v = -32768;
+                    pcm[i] = (short)v;
+                }
+            }
+            RememberEcho(pcm, decoded);
             var bytes = new byte[decoded * 2];
             Buffer.BlockCopy(pcm, 0, bytes, 0, bytes.Length);
             lock (_sync)

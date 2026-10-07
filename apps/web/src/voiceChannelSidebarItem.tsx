@@ -68,7 +68,7 @@ export function VoiceChannelSidebarItem({
       presence?.screenShareUserIds
     );
     const meSpeaking = isUserSpeakingInVoice(profile?.id, channelId);
-    const meSharing = sharers.has(meId);
+    const meSharing = sharers.has(meId) || !!voiceState?.sharingScreen;
     roster = (
       <ul className="voice-members-inline">
         <li className={`voice-members-inline__me ${meSpeaking ? "is-speaking" : ""}`}>

@@ -33,7 +33,13 @@ contextBridge.exposeInMainWorld("sloncord", {
     ipcRenderer.invoke("sloncord:set-native-voice-input-device", deviceId),
   setNativeVoiceOutputDevice: (deviceId: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("sloncord:set-native-voice-output-device", deviceId),
-  onNativeVoiceSpeaking: (cb: (detail: { speaking: boolean; level: number }) => void): (() => void) => {
+  setNativeVoiceProcessing: (opts: Record<string, unknown>): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("sloncord:set-native-voice-processing", opts),
+  setNativeVoiceMicGain: (gain: number): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("sloncord:set-native-voice-mic-gain", gain),
+  setNativeVoiceSpeakerGain: (gain: number): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("sloncord:set-native-voice-speaker-gain", gain),
+  onNativeVoiceSpeaking: (cb: (detail: { speaking: boolean; level: number; threshold?: number }) => void): (() => void) => {
     const fn = (_e: unknown, detail: { speaking: boolean; level: number }): void => {
       cb(detail);
     };
