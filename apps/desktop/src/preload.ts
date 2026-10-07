@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("sloncord", {
   ): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke("sloncord:start-native-screen-audio", selection ?? undefined),
   stopNativeScreenAudio: (): Promise<{ ok: boolean }> => ipcRenderer.invoke("sloncord:stop-native-screen-audio"),
+  getNativeScreenAudioDetail: (): Promise<string> => ipcRenderer.invoke("sloncord:native-screen-audio-detail"),
   startNativeVoice: (cfg: {
     udpHost: string;
     udpPort: number;

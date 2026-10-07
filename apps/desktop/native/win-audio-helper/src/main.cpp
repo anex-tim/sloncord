@@ -40,14 +40,15 @@ static std::wstring to_wstr(const std::string& s) {
   return out;
 }
 
+// Канал закрыт (Sloncord завершился) — выходим, иначе процесс висит и держит exe, и установщик не может его обновить.
 static void write_u32(HANDLE h, uint32_t v) {
   DWORD w = 0;
-  WriteFile(h, &v, sizeof(v), &w, nullptr);
+  if (!WriteFile(h, &v, sizeof(v), &w, nullptr)) ExitProcess(0);
 }
 
 static void write_bytes(HANDLE h, const void* p, uint32_t len) {
   DWORD w = 0;
-  WriteFile(h, p, len, &w, nullptr);
+  if (!WriteFile(h, p, len, &w, nullptr)) ExitProcess(0);
 }
 
 static Args parse_args(int argc, char** argv) {
@@ -631,7 +632,8 @@ static std::wstring process_image_name(DWORD pid) {
 }
 
 static bool is_sloncord_image(const std::wstring& n) {
-  return n == L"sloncord.exe" || n == L"sloncordnativevoice.exe" || n == L"sloncordwinaudiohelper.exe";
+  return n == L"sloncord.exe" || n == L"sloncordnativevoice.exe" || n == L"sloncordwinaudiohelper.exe"
+    || n == L"sloncordscreenaudio.exe";
 }
 
 static std::set<DWORD> ancestors_of(DWORD pid) {

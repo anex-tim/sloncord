@@ -60,6 +60,8 @@ type SloncordNativeVoiceBridge = {
     selection?: { tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null
   ) => Promise<{ ok: boolean; error?: string }>;
   stopNativeScreenAudio?: () => Promise<{ ok: boolean }>;
+  getNativeScreenAudioDetail?: () => Promise<string>;
+  getAppVersion?: () => Promise<string>;
 };
 
 function bridge(): SloncordNativeVoiceBridge | null {
@@ -340,6 +342,18 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       if (statTick % 6 !== 0) return;
       const s = screenAudioStats;
       if (s.captured + s.sent + s.received + s.played + s.skipped === 0 && !screenSharing && !watchedScreenUserId) return;
+      if (screenSharing) {
+        void Promise.all([
+          bridge()?.getAppVersion?.().catch(() => "") ?? Promise.resolve(""),
+          bridge()?.getNativeScreenAudioDetail?.().catch(() => "") ?? Promise.resolve(""),
+        ]).then(([ver, detail]) => {
+          sendPresence({
+            type: "screenAudioStat",
+            roomId: opts.roomId,
+            payload: `ver=${ver || "?"} ${String(detail || "no-helper").slice(-260)}`,
+          });
+        });
+      }
       sendPresence({
         type: "screenAudioStat",
         roomId: opts.roomId,

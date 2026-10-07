@@ -14,6 +14,7 @@ import {
 } from "electron";
 import { execFileSync, spawn } from "node:child_process";
 import fs, { createWriteStream } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
@@ -573,6 +574,7 @@ type NativeScreenAudioStartResult =
       captureMode?: "exclude-tree" | "dual-subtract" | "subtract-fallback";
       excludeRootPid?: number;
       format?: { sampleRate: number; channels: number; bitsPerSample: number; formatTag: number };
+      detail?: string;
     }
   | { ok: false; error: string };
 
@@ -1089,6 +1091,27 @@ function stopNativeScreenAudioInternal(): void {
   }
 }
 
+let screenAudioHelperDetail: () => string = () => "";
+
+function killStaleScreenAudioHelpers(): void {
+  if (process.platform !== "win32" || nativeAudioHelper) return;
+  for (const image of ["SloncordWinAudioHelper.exe", "SloncordScreenAudio.exe"]) {
+    try {
+      execFileSync("taskkill", ["/F", "/T", "/IM", image], { windowsHide: true, stdio: "ignore", timeout: 4000 });
+    } catch {
+      /* нет таких процессов */
+    }
+  }
+}
+
+ipcMain.handle("sloncord:native-screen-audio-detail", async (): Promise<string> => {
+  try {
+    return nativeAudioHelper ? screenAudioHelperDetail() : "";
+  } catch {
+    return "";
+  }
+});
+
 ipcMain.handle("sloncord:stop-native-screen-audio", async (): Promise<{ ok: boolean }> => {
   stopNativeScreenAudioInternal();
   return { ok: true };
@@ -1113,7 +1136,9 @@ ipcMain.handle(
       if (!sel.withSystemAudio) return { ok: false, error: "Захват звука выключен в окне выбора." };
 
       const helperDev = path.join(__dirname, "..", "resources", "SloncordWinAudioHelper.exe");
-      const helperProd = path.join(process.resourcesPath, "SloncordWinAudioHelper.exe");
+      // Новое имя файла: зависший старый SloncordWinAudioHelper.exe держал файл, и установщик его не заменял.
+      const helperProd = path.join(process.resourcesPath, "SloncordScreenAudio.exe");
+      killStaleScreenAudioHelpers();
       const helperPath = app.isPackaged ? helperProd : helperDev;
       if (!fs.existsSync(helperPath)) {
         return { ok: false, error: `Не найден helper: ${helperPath}` };
@@ -1143,6 +1168,7 @@ ipcMain.handle(
         started: { proc: ReturnType<typeof spawn>; reader: fs.ReadStream; pipe: string };
         captureMode: "exclude-tree" | "dual-subtract" | "subtract-fallback";
         excludeRootPid: number;
+        helperErr: () => string;
       }> {
         // Только корень Electron: renderer, GPU, utility и SloncordNativeVoice — его дети.
         // Вычитание полного микса не используем: из-за рассинхрона зритель слышал сам себя.
@@ -1166,7 +1192,7 @@ ipcMain.handle(
               : "Не удалось начать захват системного звука. Демонстрация продолжится без него."
           );
         }
-        return { started, captureMode: "exclude-tree", excludeRootPid };
+        return { started, captureMode: "exclude-tree", excludeRootPid, helperErr: started.helperErr };
       }
 
       let captureMode: "exclude-tree" | "dual-subtract" | "subtract-fallback" = "exclude-tree";
@@ -1232,7 +1258,16 @@ ipcMain.handle(
         stopNativeScreenAudioInternal();
       });
 
-      return { ok: true, captureMode, excludeRootPid, format: undefined };
+      let helperSize = 0;
+      try {
+        helperSize = fs.statSync(helperPath).size;
+      } catch {
+        /* ignore */
+      }
+      screenAudioHelperDetail = () =>
+        `os=${os.release()} helper=${helperSize} ${capture.helperErr().replace(/\s+/g, " ").trim()}`.slice(-600);
+      const detail = screenAudioHelperDetail();
+      return { ok: true, captureMode, excludeRootPid, format: undefined, detail };
     } catch (e) {
       stopNativeScreenAudioInternal();
       return { ok: false, error: e instanceof Error ? e.message : "Неизвестная ошибка запуска native audio." };
