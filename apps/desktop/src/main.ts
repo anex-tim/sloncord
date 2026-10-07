@@ -718,6 +718,9 @@ function getSloncordProcessPids(): number[] {
 }
 
 async function helperProcessFailedQuickly(proc: ReturnType<typeof spawn>, waitMs = 800): Promise<boolean> {
+  // Процесс мог завершиться ещё до подключения к каналу — тогда событие exit уже прошло.
+  if (proc.exitCode !== null) return proc.exitCode !== 0;
+  if (proc.signalCode !== null) return true;
   return await new Promise((resolve) => {
     let done = false;
     const finish = (failed: boolean) => {
@@ -1075,7 +1078,10 @@ function clearNativeVoiceScreenPcm(): void {
   }
 }
 
-function stopNativeScreenAudioInternal(): void {
+let screenAudioSession = 0;
+
+function stopNativeScreenAudioInternal(endSession = true): void {
+  if (endSession) screenAudioSession += 1;
   clearNativeVoiceScreenPcm();
   const cur = nativeAudioHelper;
   nativeAudioHelper = null;
@@ -1175,7 +1181,9 @@ ipcMain.handle(
         const excludeRootPid = process.pid;
         const started = await spawnScreenAudioHelper("exclude-tree", excludeRootPid);
         if (await helperProcessFailedQuickly(started.proc, 1200)) {
-          const detail = started.helperErr().replace(/\s+/g, " ").trim();
+          const code = started.proc.exitCode;
+          const codeText = code === null ? "" : `код 0x${(code >>> 0).toString(16)}`;
+          const detail = `${codeText} ${started.helperErr().replace(/\s+/g, " ").trim()}`.trim();
           try {
             started.reader.destroy();
           } catch {
@@ -1195,32 +1203,25 @@ ipcMain.handle(
         return { started, captureMode: "exclude-tree", excludeRootPid, helperErr: started.helperErr };
       }
 
-      let captureMode: "exclude-tree" | "dual-subtract" | "subtract-fallback" = "exclude-tree";
-      let excludeRootPid = process.pid;
-      let pipeLeftover = Buffer.alloc(0);
-      let started: { proc: ReturnType<typeof spawn>; reader: fs.ReadStream; pipe: string };
-
-      // И экран, и окно: системный микс без звука самого Sloncord.
-      // Захват только процесса окна не отдаёт звук других программ.
-      const capture = await tryStartScreenCapture();
-      started = capture.started;
-      captureMode = capture.captureMode;
-      excludeRootPid = capture.excludeRootPid;
-
-      nativeAudioHelper = {
-        proc: started.proc,
-        pipePath: started.pipe,
-        reader: started.reader,
-        leftover: pipeLeftover,
-        dropping: false,
-      };
-
+      const session = ++screenAudioSession;
+      let restarts = 0;
       const MAX_INFLIGHT = 2 * 1024 * 1024;
       let inflight = 0;
 
-      nativeAudioHelper.reader.on("data", (chunk: Buffer) => {
+      const attachCapture = (capture: Awaited<ReturnType<typeof tryStartScreenCapture>>) => {
+      const started = capture.started;
+      const helper = {
+        proc: started.proc,
+        pipePath: started.pipe,
+        reader: started.reader,
+        leftover: Buffer.alloc(0),
+        dropping: false,
+      };
+      nativeAudioHelper = helper;
+
+      helper.reader.on("data", (chunk: Buffer) => {
         const cur = nativeAudioHelper;
-        if (!cur) return;
+        if (!cur || cur !== helper) return;
         cur.leftover = Buffer.concat([cur.leftover, chunk]);
         while (cur.leftover.length >= 4) {
           const len = cur.leftover.readUInt32LE(0);
@@ -1251,12 +1252,22 @@ ipcMain.handle(
         }
       });
 
-      nativeAudioHelper.reader.on("error", () => {
-        stopNativeScreenAudioInternal();
-      });
-      nativeAudioHelper.proc.on("exit", () => {
-        stopNativeScreenAudioInternal();
-      });
+      // Упавший во время демонстрации захват перезапускаем, а не оставляем зрителей без звука.
+      const onHelperGone = () => {
+        if (nativeAudioHelper !== helper) return;
+        stopNativeScreenAudioInternal(false);
+        if (session !== screenAudioSession || restarts >= 5) return;
+        restarts += 1;
+        setTimeout(() => {
+          if (session !== screenAudioSession || nativeAudioHelper) return;
+          void tryStartScreenCapture().then(attachCapture).catch(() => {});
+        }, 400);
+      };
+      helper.reader.on("error", onHelperGone);
+      helper.proc.on("exit", onHelperGone);
+      screenAudioHelperDetail = () =>
+        `os=${os.release()} helper=${helperSize} restarts=${restarts} ${capture.helperErr().replace(/\s+/g, " ").trim()}`.slice(-600);
+      };
 
       let helperSize = 0;
       try {
@@ -1264,10 +1275,19 @@ ipcMain.handle(
       } catch {
         /* ignore */
       }
-      screenAudioHelperDetail = () =>
-        `os=${os.release()} helper=${helperSize} ${capture.helperErr().replace(/\s+/g, " ").trim()}`.slice(-600);
+      let capture: Awaited<ReturnType<typeof tryStartScreenCapture>> | null = null;
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 3 && !capture; attempt++) {
+        try {
+          capture = await tryStartScreenCapture();
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      if (!capture) throw lastErr instanceof Error ? lastErr : new Error("Не удалось начать захват системного звука.");
+      attachCapture(capture);
       const detail = screenAudioHelperDetail();
-      return { ok: true, captureMode, excludeRootPid, format: undefined, detail };
+      return { ok: true, captureMode: capture.captureMode, excludeRootPid: capture.excludeRootPid, format: undefined, detail };
     } catch (e) {
       stopNativeScreenAudioInternal();
       return { ok: false, error: e instanceof Error ? e.message : "Неизвестная ошибка запуска native audio." };

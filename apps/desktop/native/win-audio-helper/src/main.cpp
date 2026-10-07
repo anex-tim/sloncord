@@ -189,8 +189,10 @@ struct ActivateResult : public IActivateAudioInterfaceCompletionHandler, public 
   ActivateResult() { done = CreateEventW(nullptr, FALSE, FALSE, nullptr); }
   virtual ~ActivateResult() { if (done) CloseHandle(done); if (client) client->Release(); }
   ULONG STDMETHODCALLTYPE AddRef() override { return (ULONG)InterlockedIncrement(&ref); }
+  // Живёт в куче: Windows отпускает обработчик из своего потока уже после возврата из активации.
   ULONG STDMETHODCALLTYPE Release() override {
     ULONG r = (ULONG)InterlockedDecrement(&ref);
+    if (r == 0) delete this;
     return r;
   }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
@@ -243,27 +245,31 @@ static IAudioClient* activate_process_loopback(DWORD targetPid, PROCESS_LOOPBACK
   pv.blob.cbSize = sizeof(*act);
   pv.blob.pBlobData = reinterpret_cast<BYTE*>(act);
 
-  ActivateResult handler;
+  ActivateResult* handlerPtr = new ActivateResult();
+  ActivateResult& handler = *handlerPtr;
   IActivateAudioInterfaceAsyncOperation* op = nullptr;
   HRESULT hr = ActivateAudioInterfaceAsync(
     VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
     __uuidof(IAudioClient),
     &pv,
-    &handler,
+    handlerPtr,
     &op
   );
   if (FAILED(hr) || !op) {
     CoTaskMemFree(act);
+    handlerPtr->Release();
     if (outHr) *outHr = FAILED(hr) ? hr : E_FAIL;
     log_hr("ActivateAudioInterfaceAsync", FAILED(hr) ? hr : E_FAIL);
     return nullptr;
   }
   // STA needs a message pump; MTA completes on the event. Pump both ways.
   const DWORD waitStart = GetTickCount();
+  bool completed = false;
   while (true) {
     DWORD elapsed = GetTickCount() - waitStart;
     if (elapsed >= 8000) break;
     DWORD wr = MsgWaitForMultipleObjects(1, &handler.done, FALSE, 8000 - elapsed, QS_ALLINPUT);
+    if (wr == WAIT_OBJECT_0) completed = true;
     if (wr == WAIT_OBJECT_0) break;
     if (wr == WAIT_OBJECT_0 + 1) {
       MSG msg;
@@ -276,11 +282,17 @@ static IAudioClient* activate_process_loopback(DWORD targetPid, PROCESS_LOOPBACK
     break;
   }
   op->Release();
-  CoTaskMemFree(act);
-  if (outHr) *outHr = handler.hr;
-  if (FAILED(handler.hr) || !handler.client) return nullptr;
-  IAudioClient* client = handler.client;
-  handler.client = nullptr;
+  // Блоб параметров может читаться до завершения активации — без ответа не освобождаем.
+  if (completed) CoTaskMemFree(act);
+  HRESULT result = completed ? handler.hr : HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+  IAudioClient* client = nullptr;
+  if (completed && SUCCEEDED(result) && handler.client) {
+    client = handler.client;
+    handler.client = nullptr;
+  }
+  handlerPtr->Release();
+  if (outHr) *outHr = result;
+  if (!client) return nullptr;
   return client;
 }
 
