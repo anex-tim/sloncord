@@ -27,10 +27,13 @@ public enum PlatformModeratorPerm : ulong
 
 internal static class SloncordPlatformModeratorPerms
 {
-    public const string RootLogin = "anex";
-
-    public static bool IsRootLogin(string? login) =>
-        string.Equals(login?.Trim(), RootLogin, StringComparison.OrdinalIgnoreCase);
+    public static bool IsRootLogin(string? login)
+    {
+        if (string.IsNullOrWhiteSpace(login)) return false;
+        var root = Environment.GetEnvironmentVariable("SLONCORD_ROOT_LOGIN");
+        if (string.IsNullOrWhiteSpace(root)) return false;
+        return string.Equals(login.Trim(), root.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
 
     public static ulong Sanitize(ulong raw)
     {

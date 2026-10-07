@@ -1,7 +1,7 @@
 {
   "name": "@sloncord/moderation",
   "private": true,
-  "version": "1.3.7",
+  "version": "1.3.8",
   "description": "Sloncord platform moderation (Electron)",
   "author": "Sloncord",
   "main": "dist-electron/main.cjs",

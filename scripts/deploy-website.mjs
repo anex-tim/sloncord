@@ -719,8 +719,36 @@ async function sshEnsureApiRuntime(config, common) {
     `systemctl reset-failed ${serviceName}.service || true`,
   ].join("\n");
   await execSshCommand(common, sh);
+  await ensureRootLoginEnv(config, common);
   // eslint-disable-next-line no-console
   console.log("→ SSH: API runtime (права + systemd) настроен.\n");
+}
+
+/**
+ * Корневой логин только в /etc/sloncord/sloncord.env на сервере, не в git.
+ * @param {Record<string, unknown>} config
+ * @param {import('ssh2').ConnectConfig} common
+ */
+async function ensureRootLoginEnv(config, common) {
+  const rootLogin = String(config.rootLogin ?? "").trim();
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(rootLogin)) {
+    console.log("→ SSH: rootLogin в deploy-конфиге пуст, /etc/sloncord/sloncord.env не меняю.\n");
+    return;
+  }
+  const b64 = Buffer.from(`SLONCORD_ROOT_LOGIN=${rootLogin}\n`, "utf8").toString("base64");
+  const sh = [
+    "set -e",
+    "install -d -m 0755 /etc/sloncord",
+    "touch /etc/sloncord/sloncord.env",
+    "chmod 600 /etc/sloncord/sloncord.env",
+    'TMP="$(mktemp)"',
+    "grep -v '^SLONCORD_ROOT_LOGIN=' /etc/sloncord/sloncord.env > \"$TMP\" || true",
+    `echo '${b64}' | base64 -d >> "$TMP"`,
+    'install -m 0600 "$TMP" /etc/sloncord/sloncord.env',
+    'rm -f "$TMP"',
+  ].join("\n");
+  console.log("→ SSH: корневой логин записан в окружение сервиса (значение не печатается).\n");
+  await execSshCommand(common, sh);
 }
 
 /**

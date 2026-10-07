@@ -960,9 +960,10 @@ ipcMain.handle("sloncord:set-native-voice-muted", async (_e, muted: boolean) => 
 
 ipcMain.handle("sloncord:send-native-video-frame", async (_e, jpegBase64: string) => {
   try {
-    nativeVoiceHelper?.proc.stdin?.write(
-      `${JSON.stringify({ cmd: "videoFrame", jpegBase64: String(jpegBase64 || "") })}\n`
-    );
+    const stdin = nativeVoiceHelper?.proc.stdin;
+    const jpeg = String(jpegBase64 || "");
+    if (!stdin?.writable || stdin.writableLength > 1_500_000 || jpeg.length > 220_000) return { ok: false };
+    stdin.write(`${JSON.stringify({ cmd: "videoFrame", jpegBase64: jpeg })}\n`);
     return { ok: true };
   } catch {
     return { ok: false };
@@ -1085,7 +1086,7 @@ ipcMain.handle(
         // Вычитание полного микса не используем: из-за рассинхрона зритель слышал сам себя.
         const excludeRootPid = process.pid;
         const started = await spawnScreenAudioHelper("exclude-tree", excludeRootPid);
-        if (await helperProcessFailedQuickly(started.proc, 1500)) {
+        if (await helperProcessFailedQuickly(started.proc, 4000)) {
           try {
             started.reader.destroy();
           } catch {
@@ -1097,7 +1098,7 @@ ipcMain.handle(
             /* ignore */
           }
           throw new Error(
-            "Windows не включил захват системного звука без звука Sloncord. Нужна Windows 10 2004 или новее."
+            "Не удалось захватить системный звук без звука Sloncord. Демонстрация продолжится без системного звука."
           );
         }
         return { started, captureMode: "exclude-tree", excludeRootPid };

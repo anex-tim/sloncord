@@ -267,15 +267,20 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     const b = bridge();
     // Источник выбирает Electron в setDisplayMediaRequestHandler.
     // chromeMediaSource/mandatory в getDisplayMedia даёт "exact constraints are not supported".
+    // Системный звук берёт WASAPI helper. audio:true в Chromium включает весь микс, включая Sloncord,
+    // и на части сборок Windows остановка этой дорожки гасит и видео.
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
-      audio: true,
+      audio: false,
     });
-    try {
-      stream.getAudioTracks?.().forEach((t) => t.stop());
-    } catch {
-      /* Chromium loopback includes Sloncord; system audio comes from WASAPI exclude. */
+    const videoTrack = stream.getVideoTracks?.()?.[0];
+    if (!videoTrack) {
+      try { stream.getTracks?.().forEach((t) => t.stop()); } catch { /* ignore */ }
+      throw new Error("Не удалось начать демонстрацию экрана.");
     }
+    videoTrack.addEventListener("ended", () => {
+      stopScreenShareInternal();
+    });
     let selection: { tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null = null;
     try {
       selection = (await b?.takeDisplaySelection?.()) ?? null;
@@ -290,6 +295,10 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
         );
       }
     }
+    if (videoTrack.readyState !== "live") {
+      try { stream.getTracks?.().forEach((t) => t.stop()); } catch { /* ignore */ }
+      throw new Error("Не удалось начать демонстрацию экрана.");
+    }
     screenStream = stream;
     screenSharing = true;
     screenVideoEl = document.createElement("video");
@@ -300,27 +309,39 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     screenCanvas = document.createElement("canvas");
     publishScreenFlag(true);
 
-    stream.getVideoTracks?.()?.[0]?.addEventListener?.("ended", () => {
-      stopScreenShareInternal();
-    });
-
+    let frameBusy = false;
+    let jpegQuality = 0.62;
     screenCaptureTimer = setInterval(() => {
-      if (!screenSharing || !screenVideoEl || !screenCanvas || !b?.sendNativeVideoFrame) return;
-      const vw = screenVideoEl.videoWidth || 1280;
-      const vh = screenVideoEl.videoHeight || 720;
+      if (frameBusy || !screenSharing || !screenVideoEl || !screenCanvas || !b?.sendNativeVideoFrame) return;
+      const track = screenStream?.getVideoTracks?.()?.[0];
+      if (!track || track.readyState !== "live") {
+        stopScreenShareInternal();
+        return;
+      }
+      const vw = screenVideoEl.videoWidth;
+      const vh = screenVideoEl.videoHeight;
       if (vw < 2 || vh < 2) return;
       const scale = Math.min(1, 1280 / vw);
       const w = Math.max(2, Math.round(vw * scale));
       const h = Math.max(2, Math.round(vh * scale));
-      screenCanvas.width = w;
-      screenCanvas.height = h;
+      if (screenCanvas.width !== w) screenCanvas.width = w;
+      if (screenCanvas.height !== h) screenCanvas.height = h;
       const ctx = screenCanvas.getContext("2d");
       if (!ctx) return;
       ctx.drawImage(screenVideoEl, 0, 0, w, h);
-      const dataUrl = screenCanvas.toDataURL("image/jpeg", 0.72);
-      const b64 = dataUrl.split(",")[1] || "";
-      if (b64) void b.sendNativeVideoFrame(b64);
-    }, 120);
+      let dataUrl = screenCanvas.toDataURL("image/jpeg", jpegQuality);
+      let b64 = dataUrl.split(",")[1] || "";
+      if (b64.length > 160000 && jpegQuality > 0.35) {
+        jpegQuality = Math.max(0.35, jpegQuality - 0.08);
+        dataUrl = screenCanvas.toDataURL("image/jpeg", jpegQuality);
+        b64 = dataUrl.split(",")[1] || "";
+      }
+      if (!b64 || b64.length > 220000) return;
+      frameBusy = true;
+      void Promise.resolve(b.sendNativeVideoFrame(b64)).finally(() => {
+        frameBusy = false;
+      });
+    }, 140);
   }
 
   return {

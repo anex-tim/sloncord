@@ -349,7 +349,11 @@ internal sealed class VoiceRuntime
     {
         if (_udp is null || _remote is null || jpeg.Length == 0) return;
         const int chunkMax = VoiceProtocol.MaxPayload - 2;
-        var count = Math.Max(1, (jpeg.Length + chunkMax - 1) / chunkMax);
+        var count = (jpeg.Length + chunkMax - 1) / chunkMax;
+        if (count <= 0 || count > 255) return;
+        // Один номер кадра на все куски, иначе приёмник никогда не собирает картинку и копит буферы.
+        var frameSeq = _seq++;
+        var tick = (uint)Environment.TickCount;
         for (var i = 0; i < count; i++)
         {
             var offset = i * chunkMax;
@@ -359,13 +363,34 @@ internal sealed class VoiceRuntime
             payload[1] = (byte)count;
             Buffer.BlockCopy(jpeg, offset, payload, 2, len);
             var kind = count == 1 ? VoiceProtocol.KindVideo : VoiceProtocol.KindVideoFrag;
-            var packet = BuildPacket(kind, _sessionId, _seq++, (uint)Environment.TickCount, payload);
+            var packet = BuildPacket(kind, _sessionId, frameSeq, tick, payload);
             try { _udp.Send(packet, packet.Length, _remote); } catch { /* ignore */ }
         }
     }
 
+    private void PurgeVideoFrags()
+    {
+        if (_videoFrags.Count == 0) return;
+        var now = DateTime.UtcNow;
+        List<string>? stale = null;
+        foreach (var kv in _videoFrags)
+        {
+            if ((now - kv.Value.At).TotalSeconds > 2)
+            {
+                stale ??= new List<string>();
+                stale.Add(kv.Key);
+            }
+        }
+        if (stale is not null)
+        {
+            foreach (var key in stale) _videoFrags.Remove(key);
+        }
+        if (_videoFrags.Count > 24) _videoFrags.Clear();
+    }
+
     private void HandleRemoteVideo(ushort sessionId, uint sequence, byte kind, byte[] payload)
     {
+        PurgeVideoFrags();
         byte[]? jpeg = null;
         if (kind == VoiceProtocol.KindVideo)
         {
@@ -375,6 +400,7 @@ internal sealed class VoiceRuntime
         {
             var fragIndex = payload[0];
             var fragCount = payload[1];
+            if (fragCount == 0) return;
             var body = payload.AsSpan(2).ToArray();
             var key = $"{sessionId}:{sequence}";
             if (!_videoFrags.TryGetValue(key, out var entry))

@@ -2,9 +2,11 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <audioclientactivationparams.h>
+#include <inspectable.h>
 #include <avrt.h>
 #include <propvarutil.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string>
 #include <vector>
 #include <set>
@@ -108,18 +110,29 @@ static void capture_close(Capture& c) {
   if (c.evt) { CloseHandle(c.evt); c.evt = nullptr; }
 }
 
-struct ActivateResult : public IActivateAudioInterfaceCompletionHandler {
+struct ActivateResult : public IActivateAudioInterfaceCompletionHandler, public IAgileObject {
   HANDLE done = nullptr;
   HRESULT hr = E_FAIL;
   IAudioClient* client = nullptr;
+  LONG ref = 1;
   ActivateResult() { done = CreateEventW(nullptr, FALSE, FALSE, nullptr); }
   virtual ~ActivateResult() { if (done) CloseHandle(done); if (client) client->Release(); }
-  ULONG STDMETHODCALLTYPE AddRef() override { return 2; }
-  ULONG STDMETHODCALLTYPE Release() override { return 1; }
+  ULONG STDMETHODCALLTYPE AddRef() override { return (ULONG)InterlockedIncrement(&ref); }
+  ULONG STDMETHODCALLTYPE Release() override {
+    ULONG r = (ULONG)InterlockedDecrement(&ref);
+    return r;
+  }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
     if (!ppv) return E_POINTER;
-    if (riid == __uuidof(IActivateAudioInterfaceCompletionHandler) || riid == __uuidof(IUnknown)) {
+    if (riid == __uuidof(IUnknown) || riid == __uuidof(IActivateAudioInterfaceCompletionHandler)) {
       *ppv = static_cast<IActivateAudioInterfaceCompletionHandler*>(this);
+      AddRef();
+      return S_OK;
+    }
+    // Windows 11 returns E_ILLEGAL_METHOD_CALL unless the handler is agile.
+    if (riid == __uuidof(IAgileObject)) {
+      *ppv = static_cast<IAgileObject*>(this);
+      AddRef();
       return S_OK;
     }
     *ppv = nullptr;
@@ -138,17 +151,26 @@ struct ActivateResult : public IActivateAudioInterfaceCompletionHandler {
   }
 };
 
-static bool init_process_loopback_mode(DWORD targetPid, PROCESS_LOOPBACK_MODE mode, Capture& result) {
-  AUDIOCLIENT_ACTIVATION_PARAMS act = {};
-  act.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
-  act.ProcessLoopbackParams.TargetProcessId = targetPid;
-  act.ProcessLoopbackParams.ProcessLoopbackMode = mode;
+static void log_hr(const char* step, HRESULT hr) {
+  fprintf(stderr, "sloncord-audio %s hr=0x%08lX\n", step, (unsigned long)hr);
+}
+
+static IAudioClient* activate_process_loopback(DWORD targetPid, PROCESS_LOOPBACK_MODE mode, HRESULT* outHr) {
+  auto* act = (AUDIOCLIENT_ACTIVATION_PARAMS*)CoTaskMemAlloc(sizeof(AUDIOCLIENT_ACTIVATION_PARAMS));
+  if (!act) {
+    if (outHr) *outHr = E_OUTOFMEMORY;
+    return nullptr;
+  }
+  ZeroMemory(act, sizeof(*act));
+  act->ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
+  act->ProcessLoopbackParams.TargetProcessId = targetPid;
+  act->ProcessLoopbackParams.ProcessLoopbackMode = mode;
 
   PROPVARIANT pv;
   PropVariantInit(&pv);
   pv.vt = VT_BLOB;
-  pv.blob.cbSize = sizeof(act);
-  pv.blob.pBlobData = reinterpret_cast<BYTE*>(&act);
+  pv.blob.cbSize = sizeof(*act);
+  pv.blob.pBlobData = reinterpret_cast<BYTE*>(act);
 
   ActivateResult handler;
   IActivateAudioInterfaceAsyncOperation* op = nullptr;
@@ -159,45 +181,129 @@ static bool init_process_loopback_mode(DWORD targetPid, PROCESS_LOOPBACK_MODE mo
     &handler,
     &op
   );
-  if (FAILED(hr) || !op) return false;
-  WaitForSingleObject(handler.done, 8000);
+  if (FAILED(hr) || !op) {
+    CoTaskMemFree(act);
+    if (outHr) *outHr = FAILED(hr) ? hr : E_FAIL;
+    log_hr("ActivateAudioInterfaceAsync", FAILED(hr) ? hr : E_FAIL);
+    return nullptr;
+  }
+  // STA needs a message pump; MTA completes on the event. Pump both ways.
+  const DWORD waitStart = GetTickCount();
+  while (true) {
+    DWORD elapsed = GetTickCount() - waitStart;
+    if (elapsed >= 8000) break;
+    DWORD wr = MsgWaitForMultipleObjects(1, &handler.done, FALSE, 8000 - elapsed, QS_ALLINPUT);
+    if (wr == WAIT_OBJECT_0) break;
+    if (wr == WAIT_OBJECT_0 + 1) {
+      MSG msg;
+      while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+      }
+      continue;
+    }
+    break;
+  }
   op->Release();
-  if (FAILED(handler.hr) || !handler.client) return false;
+  CoTaskMemFree(act);
+  if (outHr) *outHr = handler.hr;
+  if (FAILED(handler.hr) || !handler.client) return nullptr;
+  IAudioClient* client = handler.client;
+  handler.client = nullptr;
+  return client;
+}
 
+static bool bind_capture_client(IAudioClient* client, WAVEFORMATEX* mix, Capture& result) {
+  HANDLE evt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  if (!evt) return false;
+  HRESULT hr = client->SetEventHandle(evt);
+  if (FAILED(hr)) { CloseHandle(evt); return false; }
+  IAudioCaptureClient* cap = nullptr;
+  hr = client->GetService(__uuidof(IAudioCaptureClient), (void**)&cap);
+  if (FAILED(hr) || !cap) { CloseHandle(evt); return false; }
+  result.ac = client;
+  result.cap = cap;
+  result.wf = mix;
+  result.evt = evt;
+  return true;
+}
+
+// Windows 11 24H2/26H2 often rejects IAudioClient3 periods on the virtual process-loopback device.
+// A fresh activation + IAudioClient::Initialize still captures the same exclude/include tree.
+static bool init_with_audio_client3(IAudioClient* client, Capture& result) {
   IAudioClient3* ac3 = nullptr;
-  hr = handler.client->QueryInterface(__uuidof(IAudioClient3), (void**)&ac3);
+  HRESULT hr = client->QueryInterface(__uuidof(IAudioClient3), (void**)&ac3);
   if (FAILED(hr) || !ac3) return false;
-
   WAVEFORMATEX* mix = nullptr;
   UINT32 curPeriod = 0;
   hr = ac3->GetCurrentSharedModeEnginePeriod(&mix, &curPeriod);
   if (FAILED(hr) || !mix) { ac3->Release(); return false; }
-
   UINT32 defP = 0, fundP = 0, minP = 0, maxP = 0;
   hr = ac3->GetSharedModeEnginePeriod(mix, &defP, &fundP, &minP, &maxP);
   if (FAILED(hr)) { CoTaskMemFree(mix); ac3->Release(); return false; }
-  UINT32 period = minP ? minP : defP;
-
-  DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
-  hr = ac3->InitializeSharedAudioStream(flags, period, mix, nullptr);
-  if (FAILED(hr)) { CoTaskMemFree(mix); ac3->Release(); return false; }
-
-  HANDLE evt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-  if (!evt) { CoTaskMemFree(mix); ac3->Release(); return false; }
-  hr = handler.client->SetEventHandle(evt);
-  if (FAILED(hr)) { CloseHandle(evt); CoTaskMemFree(mix); ac3->Release(); return false; }
-
-  IAudioCaptureClient* cap = nullptr;
-  hr = handler.client->GetService(__uuidof(IAudioCaptureClient), (void**)&cap);
-  if (FAILED(hr) || !cap) { CloseHandle(evt); CoTaskMemFree(mix); ac3->Release(); return false; }
-
-  result.ac = handler.client;
-  handler.client = nullptr;
-  result.cap = cap;
-  result.wf = mix;
-  result.evt = evt;
+  UINT32 period = minP ? minP : (defP ? defP : 480);
+  hr = ac3->InitializeSharedAudioStream(AUDCLNT_STREAMFLAGS_EVENTCALLBACK, period, mix, nullptr);
   ac3->Release();
+  if (FAILED(hr)) {
+    log_hr("IAudioClient3.InitializeSharedAudioStream", hr);
+    CoTaskMemFree(mix);
+    return false;
+  }
+  if (!bind_capture_client(client, mix, result)) { CoTaskMemFree(mix); return false; }
   return true;
+}
+
+static WAVEFORMATEX* alloc_pcm16_stereo_48k() {
+  auto* mix = (WAVEFORMATEX*)CoTaskMemAlloc(sizeof(WAVEFORMATEX));
+  if (!mix) return nullptr;
+  ZeroMemory(mix, sizeof(*mix));
+  mix->wFormatTag = WAVE_FORMAT_PCM;
+  mix->nChannels = 2;
+  mix->nSamplesPerSec = 48000;
+  mix->wBitsPerSample = 16;
+  mix->nBlockAlign = 4;
+  mix->nAvgBytesPerSec = 48000 * 4;
+  mix->cbSize = 0;
+  return mix;
+}
+
+static bool init_with_fixed_format(IAudioClient* client, DWORD flags, REFERENCE_TIME dur, Capture& result) {
+  WAVEFORMATEX* mix = alloc_pcm16_stereo_48k();
+  if (!mix) return false;
+  HRESULT hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, dur, 0, mix, nullptr);
+  if (FAILED(hr)) {
+    log_hr("IAudioClient.Initialize", hr);
+    CoTaskMemFree(mix);
+    return false;
+  }
+  if (!bind_capture_client(client, mix, result)) { CoTaskMemFree(mix); return false; }
+  return true;
+}
+
+static bool init_process_loopback_mode(DWORD targetPid, PROCESS_LOOPBACK_MODE mode, Capture& result) {
+  const DWORD flagSets[] = {
+    AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+  };
+  bool activated = false;
+  for (DWORD flags : flagSets) {
+    HRESULT hr = E_FAIL;
+    IAudioClient* client = activate_process_loopback(targetPid, mode, &hr);
+    if (!client) {
+      log_hr(activated ? "activate-retry" : "activate", hr);
+      return false;
+    }
+    activated = true;
+    if (init_with_fixed_format(client, flags, 0, result)) return true;
+    client->Release();
+  }
+
+  HRESULT hr = E_FAIL;
+  IAudioClient* client = activate_process_loopback(targetPid, mode, &hr);
+  if (!client) return false;
+  if (init_with_audio_client3(client, result)) return true;
+  client->Release();
+  return false;
 }
 
 static bool init_process_loopback_include(DWORD targetPid, Capture& result) {

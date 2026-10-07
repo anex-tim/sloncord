@@ -57,12 +57,9 @@ export type PlatformMe = {
   permissionDefs?: PlatformPermDef[];
 };
 
-export const ROOT_LOGIN = "anex";
-
 export function isRootUser(user: { login?: string; isPlatformRoot?: boolean } | null | undefined): boolean {
   if (!user) return false;
-  if (user.isPlatformRoot) return true;
-  return String(user.login || "").trim().toLowerCase() === ROOT_LOGIN;
+  return user.isPlatformRoot === true;
 }
 
 export function isRootMessage(msg: { senderIsPlatformRoot?: boolean } | null | undefined): boolean {

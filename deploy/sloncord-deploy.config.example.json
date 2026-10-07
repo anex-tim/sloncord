@@ -5,6 +5,7 @@
   "remoteWwwroot": "/opt/sloncord/app/wwwroot",
   "sshKey": "C:/Users/You/.ssh/id_ed25519",
   "sshPassword": "",
+  "rootLogin": "",
   "wipeBeforeUpload": false,
   "skipInstallerInDeploy": true,
   "apiServiceName": "sloncord-api",
