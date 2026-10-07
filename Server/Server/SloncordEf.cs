@@ -7,10 +7,72 @@ namespace Sloncord;
 
 internal static class PasswordHasher
 {
+    private const int Pbkdf2Iterations = 100_000;
+
     public static string Hash(string password, string salt)
     {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(password + salt));
-        return Convert.ToHexString(bytes);
+        var bytes = Rfc2898DeriveBytes.Pbkdf2(
+            Encoding.UTF8.GetBytes(password),
+            Encoding.UTF8.GetBytes(salt),
+            Pbkdf2Iterations,
+            HashAlgorithmName.SHA256,
+            32);
+        return "pbkdf2$" + Convert.ToHexString(bytes);
+    }
+
+    public static bool IsLegacy(string stored) =>
+        !stored.StartsWith("pbkdf2$", StringComparison.OrdinalIgnoreCase);
+
+    public static bool Verify(string password, string salt, string stored)
+    {
+        if (string.IsNullOrEmpty(stored)) return false;
+        if (!IsLegacy(stored))
+        {
+            var expect = Hash(password, salt);
+            var a = Encoding.UTF8.GetBytes(expect);
+            var b = Encoding.UTF8.GetBytes(stored);
+            return a.Length == b.Length && CryptographicOperations.FixedTimeEquals(a, b);
+        }
+
+        var legacy = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(password + salt)));
+        var la = Encoding.UTF8.GetBytes(legacy);
+        var lb = Encoding.UTF8.GetBytes(stored.Trim());
+        return la.Length == lb.Length && CryptographicOperations.FixedTimeEquals(la, lb);
+    }
+}
+
+internal static class SloncordStoragePath
+{
+    public static string? ResolveInside(string root, string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(root) || string.IsNullOrWhiteSpace(fileName)) return null;
+        if (fileName.IndexOfAny(new[] { '/', '\\', ':' }) >= 0) return null;
+        var rootFull = Path.GetFullPath(root);
+        var full = Path.GetFullPath(Path.Combine(rootFull, fileName));
+        var prefix = rootFull.EndsWith(Path.DirectorySeparatorChar)
+            ? rootFull
+            : rootFull + Path.DirectorySeparatorChar;
+        if (!full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+        return full;
+    }
+}
+
+internal static class AuthRateLimiter
+{
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Queue<DateTime>> Hits = new();
+
+    public static bool Allow(string key, int max, TimeSpan window)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return true;
+        var now = DateTime.UtcNow;
+        var q = Hits.GetOrAdd(key, _ => new Queue<DateTime>());
+        lock (q)
+        {
+            while (q.Count > 0 && now - q.Peek() > window) q.Dequeue();
+            if (q.Count >= max) return false;
+            q.Enqueue(now);
+            return true;
+        }
     }
 }
 

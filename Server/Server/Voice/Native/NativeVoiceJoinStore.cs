@@ -15,6 +15,7 @@ internal sealed class NativeVoiceJoinStore
         var tokenHex = Convert.ToHexString(tokenBytes).ToLowerInvariant();
         var expires = DateTime.UtcNow.Add(ttl);
         _byToken[tokenHex] = new Entry(userId, roomId, expires);
+        PurgeExpired();
         return (tokenHex, expires);
     }
 
@@ -24,12 +25,8 @@ internal sealed class NativeVoiceJoinStore
         roomId = "";
         if (string.IsNullOrWhiteSpace(tokenHex)) return false;
         var key = tokenHex.Trim().ToLowerInvariant();
-        if (!_byToken.TryGetValue(key, out var entry)) return false;
-        if (entry.ExpiresAtUtc <= DateTime.UtcNow)
-        {
-            _byToken.TryRemove(key, out _);
-            return false;
-        }
+        if (!_byToken.TryRemove(key, out var entry)) return false;
+        if (entry.ExpiresAtUtc <= DateTime.UtcNow) return false;
 
         userId = entry.UserId;
         roomId = entry.RoomId;

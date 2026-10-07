@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   fileContentUrl,
   fileKindByName,
@@ -5,6 +6,25 @@ import {
   type PlatformFileAttachment,
   type PlatformMessageHit,
 } from "./api";
+
+function useFileUrl(fileId: string): string {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    let cancel = false;
+    setUrl("");
+    fileContentUrl(fileId)
+      .then((next) => {
+        if (!cancel) setUrl(next);
+      })
+      .catch(() => {
+        if (!cancel) setUrl("");
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [fileId]);
+  return url;
+}
 
 export function messageAttachments(m: PlatformMessageHit): PlatformFileAttachment[] {
   if (Array.isArray(m.attachments) && m.attachments.length > 0) return m.attachments;
@@ -37,25 +57,14 @@ export function MessageBody({ m }: { m: PlatformMessageHit }) {
       {images.length > 0 ? (
         <div className="chat-msg-attachments">
           {images.map((f) => (
-            <a
-              key={f.id}
-              className="chat-msg-image"
-              href={fileContentUrl(f.id)}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={f.originalName || "Изображение"}
-            >
-              <img src={fileContentUrl(f.id)} alt={f.originalName || ""} loading="lazy" />
-            </a>
+            <AuthedImage key={f.id} file={f} />
           ))}
         </div>
       ) : null}
       {videos.length > 0 ? (
         <div className="chat-msg-attachments">
           {videos.map((f) => (
-            <div key={f.id} className="chat-msg-video">
-              <video src={fileContentUrl(f.id)} controls preload="metadata" title={f.originalName || "Видео"} />
-            </div>
+            <AuthedVideo key={f.id} file={f} />
           ))}
         </div>
       ) : null}
@@ -63,18 +72,41 @@ export function MessageBody({ m }: { m: PlatformMessageHit }) {
         <ul className="chat-msg-files">
           {files.map((f) => (
             <li key={f.id}>
-              <a
-                href={fileContentUrl(f.id)}
-                target="_blank"
-                rel="noopener noreferrer"
-                download={f.originalName || undefined}
-              >
-                {f.originalName || f.id}
-              </a>
+              <AuthedFileLink file={f} />
             </li>
           ))}
         </ul>
       ) : null}
     </>
+  );
+}
+
+function AuthedImage({ file }: { file: PlatformFileAttachment }) {
+  const url = useFileUrl(file.id);
+  if (!url) return null;
+  return (
+    <a className="chat-msg-image" href={url} target="_blank" rel="noopener noreferrer" title={file.originalName || "Изображение"}>
+      <img src={url} alt={file.originalName || ""} loading="lazy" />
+    </a>
+  );
+}
+
+function AuthedVideo({ file }: { file: PlatformFileAttachment }) {
+  const url = useFileUrl(file.id);
+  if (!url) return null;
+  return (
+    <div className="chat-msg-video">
+      <video src={url} controls preload="metadata" title={file.originalName || "Видео"} />
+    </div>
+  );
+}
+
+function AuthedFileLink({ file }: { file: PlatformFileAttachment }) {
+  const url = useFileUrl(file.id);
+  if (!url) return <span>{file.originalName || file.id}</span>;
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" download={file.originalName || undefined}>
+      {file.originalName || file.id}
+    </a>
   );
 }

@@ -156,11 +156,29 @@ export function isImageAttachment(file: PlatformFileAttachment): boolean {
   return fileKindByName(file.originalName) === "image";
 }
 
-export function fileContentUrl(fileId: string): string {
+const fileTicketCache = new Map<string, { ticket: string; exp: number }>();
+
+export async function fileContentUrl(fileId: string): Promise<string> {
+  const id = String(fileId || "");
   const base = getApiBase();
-  const token = getToken();
-  const qs = token ? `?access_token=${encodeURIComponent(token)}` : "";
-  return `${base}/files/${fileId}/content${qs}`;
+  if (!id || !base) return "";
+  const now = Date.now();
+  const hit = fileTicketCache.get(id);
+  if (hit && hit.exp > now + 20_000) {
+    return `${base}/files/${id}/content?ft=${encodeURIComponent(hit.ticket)}`;
+  }
+  const data = await api<{ ticket?: string; expiresInSeconds?: number }>(`/files/${id}/ticket`, {
+    method: "POST",
+  });
+  const ticket = String(data?.ticket || "");
+  if (!ticket) throw new Error("Не удалось открыть файл");
+  const ttlMs = Math.max(30, Number(data?.expiresInSeconds || 600)) * 1000;
+  if (fileTicketCache.size > 200) {
+    const oldest = fileTicketCache.keys().next().value;
+    if (oldest) fileTicketCache.delete(oldest);
+  }
+  fileTicketCache.set(id, { ticket, exp: now + ttlMs });
+  return `${base}/files/${id}/content?ft=${encodeURIComponent(ticket)}`;
 }
 
 export type PlatformChannel = {

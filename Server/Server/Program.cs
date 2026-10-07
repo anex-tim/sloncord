@@ -42,6 +42,7 @@ builder.Services.Configure<NativeVoiceOptions>(o =>
     o.PublicHost = cfg["Sloncord:Voice:Native:PublicHost"] ?? cfg["SLONCORD_VOICE_NATIVE_PUBLIC_HOST"];
     o.JoinTtlSeconds = int.TryParse(cfg["Sloncord:Voice:Native:JoinTtlSeconds"], out var ttl) ? ttl : 3600;
 });
+builder.Services.AddSingleton<FileAccessTicketStore>();
 builder.Services.AddSingleton<NativeVoiceJoinStore>();
 builder.Services.AddSingleton<NativeVoiceRegistry>();
 builder.Services.AddSingleton<NativeVoiceService>();

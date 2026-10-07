@@ -40,6 +40,9 @@ internal static class SloncordEndpoints
     {
         app.MapPost("/auth/register", async (HttpContext ctx, SloncordDbContext db, RegisterRequest req) =>
         {
+            var ipKey = SloncordClientIp.Resolve(ctx) ?? "";
+            if (!AuthRateLimiter.Allow("reg:" + ipKey, 8, TimeSpan.FromHours(1)))
+                return Results.Json(new { error = "Слишком много регистраций. Попробуйте позже." }, statusCode: StatusCodes.Status429TooManyRequests);
             if (string.IsNullOrWhiteSpace(req.Login) || string.IsNullOrWhiteSpace(req.Password) || string.IsNullOrWhiteSpace(req.Nickname))
                 return Results.BadRequest(new { error = "login, password и nickname обязательны" });
             if (req.Password.Length < 6) return Results.BadRequest(new { error = "Минимальная длина пароля - 6 символов" });
@@ -69,13 +72,18 @@ internal static class SloncordEndpoints
 
         app.MapPost("/auth/login", async (HttpContext ctx, SloncordDbContext db, LoginRequest req) =>
         {
+            var ipKey = SloncordClientIp.Resolve(ctx) ?? "";
+            if (!AuthRateLimiter.Allow("login:" + ipKey, 30, TimeSpan.FromMinutes(10)))
+                return Results.Json(new { error = "Слишком много попыток входа. Попробуйте позже." }, statusCode: StatusCodes.Status429TooManyRequests);
+
             if (string.IsNullOrWhiteSpace(req.Login) || string.IsNullOrWhiteSpace(req.Password)) return Results.BadRequest(new { error = "login и password обязательны" });
 
             var u = await db.Users.FirstOrDefaultAsync(x => x.Login.ToLower() == req.Login.Trim().ToLower());
             if (u is null) return Results.Unauthorized();
 
-            var h = PasswordHasher.Hash(req.Password, u.Salt);
-            if (!string.Equals(h, u.PasswordHash, StringComparison.OrdinalIgnoreCase)) return Results.Unauthorized();
+            if (!PasswordHasher.Verify(req.Password, u.Salt, u.PasswordHash)) return Results.Unauthorized();
+            if (PasswordHasher.IsLegacy(u.PasswordHash))
+                u.PasswordHash = PasswordHasher.Hash(req.Password, u.Salt);
             await SloncordPlatformBan.TryExpireAsync(db, u.Id);
             if (SloncordPlatformBan.IsActive(u))
             {
@@ -179,8 +187,7 @@ internal static class SloncordEndpoints
             if (req.NewPassword.Length < 6)
                 return Results.BadRequest(new { error = "Минимальная длина пароля - 6 символов" });
 
-            var curHash = PasswordHasher.Hash(req.CurrentPassword, u.Salt);
-            if (!string.Equals(curHash, u.PasswordHash, StringComparison.OrdinalIgnoreCase))
+            if (!PasswordHasher.Verify(req.CurrentPassword, u.Salt, u.PasswordHash))
                 return Results.Unauthorized();
 
             // rotate salt
@@ -263,8 +270,12 @@ internal static class SloncordEndpoints
 
             if (!can) return Results.Forbid();
 
-            var path = Path.Combine(s.StorageDir, f.StorageName);
-            if (!File.Exists(path)) return Results.NotFound(new { error = "Файл отсутствует на сервере" });
+            var path = SloncordStoragePath.ResolveInside(s.StorageDir, f.StorageName);
+            if (path is null || !File.Exists(path)) return Results.NotFound(new { error = "Файл отсутствует на сервере" });
+
+            var infoJson = new FileInfo(path);
+            if (infoJson.Length > 12 * 1024 * 1024)
+                return Results.Json(new { error = "Файл слишком большой для этого способа. Используйте /content." }, statusCode: StatusCodes.Status413PayloadTooLarge);
 
             var bytes = await File.ReadAllBytesAsync(path);
             return Results.Ok(new
@@ -280,9 +291,18 @@ internal static class SloncordEndpoints
         });
 
         // Raw file content (supports Range) for large downloads / video streaming.
-        app.MapGet("/files/{id:guid}/content", async (HttpContext ctx, SloncordDbContext db, Guid id) =>
+        app.MapPost("/files/{id:guid}/ticket", async (HttpContext ctx, SloncordDbContext db, FileAccessTicketStore tickets, Guid id) =>
         {
-            var meId = await RequireUserIdAsyncFromHeaderOrQuery(ctx, db);
+            var me = await RequireUserIdAsync(ctx, db);
+            if (me is null) return Results.Unauthorized();
+            if (!await UserCanAccessFileAsync(ctx, db, me.Value, id)) return Results.Forbid();
+            var (ticket, seconds) = tickets.Issue(me.Value, id, TimeSpan.FromMinutes(10));
+            return Results.Ok(new { ticket, expiresInSeconds = seconds });
+        });
+
+        app.MapGet("/files/{id:guid}/content", async (HttpContext ctx, SloncordDbContext db, FileAccessTicketStore tickets, Guid id) =>
+        {
+            var meId = await RequireFileCallerAsync(ctx, db, tickets, id);
             if (meId is null) return Results.Unauthorized();
 
             var f = await db.Files.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
@@ -292,8 +312,8 @@ internal static class SloncordEndpoints
 
             if (!can) return Results.Forbid();
 
-            var path = Path.Combine(s.StorageDir, f.StorageName);
-            if (!File.Exists(path)) return Results.NotFound();
+            var path = SloncordStoragePath.ResolveInside(s.StorageDir, f.StorageName);
+            if (path is null || !File.Exists(path)) return Results.NotFound();
 
             var info = new FileInfo(path);
             var total = info.Length;
@@ -379,9 +399,9 @@ internal static class SloncordEndpoints
         });
 
         // Video thumbnail (poster) for fast preview. Best-effort: returns 404/204 if cannot generate.
-        app.MapGet("/files/{id:guid}/thumb", async (HttpContext ctx, SloncordDbContext db, Guid id) =>
+        app.MapGet("/files/{id:guid}/thumb", async (HttpContext ctx, SloncordDbContext db, FileAccessTicketStore tickets, Guid id) =>
         {
-            var meId = await RequireUserIdAsyncFromHeaderOrQuery(ctx, db);
+            var meId = await RequireFileCallerAsync(ctx, db, tickets, id);
             if (meId is null) return Results.Unauthorized();
 
             var f = await db.Files.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
@@ -390,8 +410,8 @@ internal static class SloncordEndpoints
             var can = await UserCanAccessFileAsync(ctx, db, meId.Value, f.Id);
             if (!can) return Results.Forbid();
 
-            var srcPath = Path.Combine(s.StorageDir, f.StorageName);
-            if (!File.Exists(srcPath)) return Results.NotFound();
+            var srcPath = SloncordStoragePath.ResolveInside(s.StorageDir, f.StorageName);
+            if (srcPath is null || !File.Exists(srcPath)) return Results.NotFound();
 
             var thumbsDir = Path.Combine(s.StorageDir, "thumbs");
             Directory.CreateDirectory(thumbsDir);
@@ -437,11 +457,16 @@ internal static class SloncordEndpoints
         app.MapGet("/avatars/{id:guid}", async (HttpContext ctx, SloncordDbContext db, Guid id) =>
         {
             // Only for authenticated users (avatars are visible to all users inside app)
-            if (await RequireUserAsync(ctx, db) is null) return Results.Unauthorized();
+            var me = await RequireUserAsync(ctx, db);
+            if (me is null) return Results.Unauthorized();
             var f = await db.Files.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
             if (f is null) return Results.NotFound(new { error = "Файл не найден" });
-            var path = Path.Combine(s.StorageDir, f.StorageName);
-            if (!File.Exists(path)) return Results.NotFound(new { error = "Файл отсутствует на сервере" });
+            var isAvatar = await db.Users.AsNoTracking().AnyAsync(u => u.AvatarFileId == id);
+            if (!isAvatar && !await UserCanAccessFileAsync(ctx, db, me.Id, id)) return Results.Forbid();
+            var path = SloncordStoragePath.ResolveInside(s.StorageDir, f.StorageName);
+            if (path is null || !File.Exists(path)) return Results.NotFound(new { error = "Файл отсутствует на сервере" });
+            if (new FileInfo(path).Length > 8 * 1024 * 1024)
+                return Results.Json(new { error = "Файл слишком большой" }, statusCode: StatusCodes.Status413PayloadTooLarge);
             var bytes = await File.ReadAllBytesAsync(path);
             return Results.Ok(new
             {
@@ -2865,6 +2890,17 @@ internal static class SloncordEndpoints
             db.ChannelMembers.Any(cm =>
                 cm.UserId == userId &&
                 cm.ChannelId == db.Messages.Where(m => m.Id == a.MessageId).Select(m => m.ChannelId).FirstOrDefault()));
+    }
+
+    private static async Task<Guid?> RequireFileCallerAsync(
+        HttpContext ctx, SloncordDbContext db, FileAccessTicketStore tickets, Guid fileId)
+    {
+        var me = await RequireUserIdAsyncFromHeaderOrQuery(ctx, db);
+        if (me is not null) return me;
+        if (ctx.Request.Query.TryGetValue("ft", out var ft)
+            && tickets.TryAuthorize(ft.ToString(), fileId, out var ticketUser))
+            return ticketUser;
+        return null;
     }
 
     private static async Task<Guid?> RequireUserIdAsyncFromHeaderOrQuery(HttpContext ctx, SloncordDbContext db)

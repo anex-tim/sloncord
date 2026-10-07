@@ -88,6 +88,7 @@ internal sealed class NativeVoiceUdpServer : BackgroundService
     private async Task ReceiveLoopAsync(CancellationToken ct)
     {
         var udp = _udp ?? throw new InvalidOperationException("udp not started");
+        var seen = 0;
         while (!ct.IsCancellationRequested)
         {
             UdpReceiveResult result;
@@ -100,6 +101,7 @@ internal sealed class NativeVoiceUdpServer : BackgroundService
                 break;
             }
 
+            if (++seen % 400 == 0) _joinStore.PurgeExpired();
             HandleDatagram(udp, result.Buffer, result.RemoteEndPoint);
         }
     }

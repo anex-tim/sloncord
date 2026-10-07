@@ -1,3 +1,5 @@
+using System.Net;
+
 namespace Sloncord;
 
 internal static class SloncordClientIp
@@ -5,6 +7,10 @@ internal static class SloncordClientIp
     public static string? Resolve(HttpContext? ctx)
     {
         if (ctx is null) return null;
+        var remote = ctx.Connection.RemoteIpAddress;
+        var fromLocalProxy = remote is not null && IPAddress.IsLoopback(remote);
+        if (!fromLocalProxy) return Normalize(remote?.ToString());
+
         var forwarded = ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault();
         if (!string.IsNullOrWhiteSpace(forwarded))
         {

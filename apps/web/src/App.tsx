@@ -131,13 +131,31 @@ function MessageFilePreview({ file, token, onOpenLightbox, onDownload, onMediaLo
       </svg>`
     )}`
   ), []);
-  const accessTokenQS = useMemo(() => {
-    const t = String(token || "").trim();
-    return t ? `access_token=${encodeURIComponent(t)}` : "";
-  }, [token]);
+  const [fileTicket, setFileTicket] = useState("");
+  useEffect(() => {
+    let cancel = false;
+    setFileTicket("");
+    const id = String(file?.id || "");
+    if (!id || !token) return undefined;
+    fetch(`${getApiBase()}/files/${id}/ticket`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancel) setFileTicket(String(data?.ticket || ""));
+      })
+      .catch(() => {
+        if (!cancel) setFileTicket("");
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [file?.id, token]);
+  const fileTicketQS = fileTicket ? `ft=${encodeURIComponent(fileTicket)}` : "";
   const baseVideoUrl = useMemo(() => (
-    file?.id && accessTokenQS ? `${getApiBase()}/files/${file.id}/content?${accessTokenQS}` : ""
-  ), [file?.id, accessTokenQS]);
+    file?.id && fileTicketQS ? `${getApiBase()}/files/${file.id}/content?${fileTicketQS}` : ""
+  ), [file?.id, fileTicketQS]);
   const playbackVideoSrc = useMemo(() => {
     if (fallbackBlobUrl) return fallbackBlobUrl;
     const base = baseVideoUrl;
@@ -149,8 +167,8 @@ function MessageFilePreview({ file, token, onOpenLightbox, onDownload, onMediaLo
     return base;
   }, [fallbackBlobUrl, baseVideoUrl, file?.originalName]);
   const directVideoPoster = useMemo(() => (
-    file?.id && accessTokenQS ? `${getApiBase()}/files/${file.id}/thumb?${accessTokenQS}` : ""
-  ), [file?.id, accessTokenQS]);
+    file?.id && fileTicketQS ? `${getApiBase()}/files/${file.id}/thumb?${fileTicketQS}` : ""
+  ), [file?.id, fileTicketQS]);
 
   useEffect(() => {
     if (k !== "video") return;
