@@ -3521,8 +3521,13 @@ function App() {
       logout();
     });
 
-    connection.on(RT.SessionsRevoked, () => {
-      setError("Модератор завершил все ваши сессии. Войдите снова.");
+    connection.on(RT.SessionsRevoked, (payload) => {
+      const approvalRevoked = String(payload?.reason || "") === "approval_revoked";
+      setError(
+        approvalRevoked
+          ? "Одобрение аккаунта отозвано. Войти можно после повторного одобрения модератором."
+          : "Модератор завершил все ваши сессии. Войдите снова."
+      );
       setMode("login");
       logout();
     });
@@ -7509,6 +7514,13 @@ function App() {
             </h1>
           </div>
           <p className="muted">Веб-клиент в стиле Discord</p>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (mode === "login") void login();
+              else void register();
+            }}
+          >
           <input
             placeholder="Логин"
             value={authForm.login}
@@ -7530,16 +7542,17 @@ function App() {
           <div className="row">
             {mode === "login" ? (
               <>
-                <button className="small-btn" onClick={login}>Войти</button>
-                <button className="small-btn" onClick={() => setMode("register")}>Регистрация</button>
+                <button className="small-btn" type="submit">Войти</button>
+                <button className="small-btn" type="button" onClick={() => setMode("register")}>Регистрация</button>
               </>
             ) : (
               <>
-                <button className="small-btn" onClick={register}>Создать аккаунт</button>
-                <button className="small-btn" onClick={() => setMode("login")}>Назад ко входу</button>
+                <button className="small-btn" type="submit">Создать аккаунт</button>
+                <button className="small-btn" type="button" onClick={() => setMode("login")}>Назад ко входу</button>
               </>
             )}
           </div>
+          </form>
           {status && <p className="success">{status}</p>}
           {error && <p className="danger">{error}</p>}
         </div>

@@ -266,6 +266,8 @@ internal static class SloncordPlatformEndpoints
                 CreatedAtUtc = DateTime.UtcNow
             });
             await db.SaveChangesAsync();
+            if (!req.Approved)
+                await SloncordSessions.NotifyApprovalRevokedAsync(s, userId);
             return Results.Ok(new { ok = true, accountApproved = u.AccountApproved });
         });
 

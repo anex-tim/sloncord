@@ -145,7 +145,7 @@ export function UserModerationForm({
         method: "POST",
         body: { approved },
       });
-      onStatus(approved ? "Аккаунт одобрен" : "Одобрение отозвано");
+      onStatus(approved ? "Аккаунт одобрен" : "Одобрение аккаунта отозвано. Сессия пользователя завершена.");
       onReloadAudit();
       await onReloadUsers();
     } catch (e) {
@@ -272,18 +272,18 @@ export function UserModerationForm({
         {canApprove ? (
           <button
             type="button"
-            className={user.accountApproved === false ? undefined : "ghost"}
+            className={user.accountApproved === false ? undefined : "danger"}
             onClick={() =>
               askConfirm({
                 message: user.accountApproved === false
                   ? "Одобрить аккаунт? Пользователь сможет войти в Sloncord."
-                  : "Отозвать одобрение? Пользователь больше не сможет пользоваться Sloncord.",
+                  : "Отозвать одобрение аккаунта? Текущая сессия будет завершена, и пользователь не сможет пользоваться Sloncord, пока аккаунт снова не одобрят.",
                 confirmLabel: user.accountApproved === false ? "Одобрить" : "Отозвать",
                 action: () => setApproval(user.accountApproved === false),
               })
             }
           >
-            {user.accountApproved === false ? "Одобрить аккаунт" : "Отозвать одобрение"}
+            {user.accountApproved === false ? "Одобрить аккаунт" : "Отозвать одобрение аккаунта"}
           </button>
         ) : null}
         {!banned && canBan ? (
