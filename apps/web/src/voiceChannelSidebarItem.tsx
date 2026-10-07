@@ -61,11 +61,14 @@ export function VoiceChannelSidebarItem({
 
   let roster = null;
   if (isConnectedHere) {
-    const rosterRaw =
-      voiceState.rosterUserIds?.length > 0 ? voiceState.rosterUserIds : presence?.userIds || [];
-    const sharers = mergeScreenShareUserIds(
-      voiceState.screenShareUserIds,
-      presence?.screenShareUserIds
+    const rosterRaw = Array.isArray(presence?.userIds)
+      ? presence.userIds.map((x) => String(x)).filter(Boolean)
+      : (voiceState.rosterUserIds || []).map((x) => String(x)).filter(Boolean);
+    const sharers = new Set(
+      (Array.isArray(presence?.screenShareUserIds)
+        ? presence.screenShareUserIds
+        : (voiceState.screenShareUserIds || [])
+      ).map((x) => String(x)).filter(Boolean)
     );
     const meSpeaking = isUserSpeakingInVoice(profile?.id, channelId);
     const meSharing = sharers.has(meId) || !!voiceState?.sharingScreen;
@@ -92,14 +95,12 @@ export function VoiceChannelSidebarItem({
             const sid = String(id);
             const isSp = isUserSpeakingInVoice(sid, channelId);
             const isSharing = sharers.has(sid);
-            const mutedRaw =
-              voiceState.mutedUserIds?.length > 0
-                ? voiceState.mutedUserIds
-                : presence?.mutedUserIds || [];
-            const deafRaw =
-              voiceState.deafenedUserIds?.length > 0
-                ? voiceState.deafenedUserIds
-                : presence?.deafenedUserIds || [];
+            const mutedRaw = Array.isArray(presence?.mutedUserIds)
+              ? presence.mutedUserIds
+              : (voiceState.mutedUserIds || []);
+            const deafRaw = Array.isArray(presence?.deafenedUserIds)
+              ? presence.deafenedUserIds
+              : (voiceState.deafenedUserIds || []);
             const isMuted = mutedRaw.some((x) => String(x) === sid);
             const isDeaf = deafRaw.some((x) => String(x) === sid);
             const draggable = !!canDragUsers;

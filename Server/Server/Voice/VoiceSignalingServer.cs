@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using Sloncord.Hubs;
 using Sloncord.Voice;
+using Sloncord.Voice.Native;
 
 namespace Sloncord;
 
@@ -22,6 +23,7 @@ internal sealed class VoiceSignalingServer
     private readonly Dictionary<WebSocket, (Guid UserId, string RoomId)> _socketMap = new();
     private readonly Dictionary<WebSocket, string> _socketMode = new();
     private readonly ConcurrentDictionary<WebSocket, SemaphoreSlim> _sendLocks = new();
+    private int _screenFrameRelays;
     private readonly SloncordRealtime _realtime;
     private readonly VoiceGatewayService _gateway;
     private readonly VoiceSessionRegistry _sessions;
@@ -139,7 +141,9 @@ internal sealed class VoiceSignalingServer
             while (socket.State == WebSocketState.Open && !ct.IsCancellationRequested)
             {
                 using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                idle.CancelAfter(TimeSpan.FromSeconds(12));
+                // Дольше двух пропущенных ping (клиент шлёт каждые 2 с). Убитый процесс
+                // не шлёт ping, даже если TCP ещё держит прокси.
+                idle.CancelAfter(TimeSpan.FromSeconds(5));
                 System.Net.WebSockets.ValueWebSocketReceiveResult result;
                 try
                 {
@@ -214,7 +218,10 @@ internal sealed class VoiceSignalingServer
                     {
                         if (string.IsNullOrWhiteSpace(msg.RoomId) || string.IsNullOrWhiteSpace(msg.Payload)) continue;
                         if (msg.Payload.Length > 160_000) continue;
-                        await RelayScreenFrameAsync(userId, msg.RoomId, msg.Payload, socket, ct);
+                        // Не блокировать приём ping/флагов большой JPEG-рассылкой.
+                        if (System.Threading.Interlocked.CompareExchange(ref _screenFrameRelays, 1, 0) != 0) continue;
+                        _ = RelayScreenFrameAsync(userId, msg.RoomId, msg.Payload, socket, CancellationToken.None)
+                            .ContinueWith(_ => System.Threading.Interlocked.Exchange(ref _screenFrameRelays, 0));
                     }
                     else if (msg.Type == "setUserFlags")
                     {
@@ -333,7 +340,8 @@ internal sealed class VoiceSignalingServer
                     prevUserId: userId,
                     roomRoster: true,
                     skipGrace: skipGraceForOld,
-                    ct);
+                    ct,
+                    nativeGraceSeconds: (isNative && sameRoom) ? 2 : 0);
                 affectedRooms.Add(rid);
             }
 
@@ -443,7 +451,7 @@ internal sealed class VoiceSignalingServer
     }
 
     private void RemoveSocketFromRoom(
-        string roomId, Guid userId, WebSocket socket, bool notifyPeerLeft, Guid prevUserId, bool roomRoster, bool skipGrace, CancellationToken ct)
+        string roomId, Guid userId, WebSocket socket, bool notifyPeerLeft, Guid prevUserId, bool roomRoster, bool skipGrace, CancellationToken ct, int? nativeGraceSeconds = null)
     {
         bool emptyUser = false;
         bool emptyRoom = false;
@@ -465,7 +473,9 @@ internal sealed class VoiceSignalingServer
             set.Remove(socket);
             if (set.Count == 0)
             {
-                var graceSeconds = isNativeSocket ? 8 : _sessions.GraceSeconds;
+                // Обрыв native-сокета (убийство процесса) убирает человека сразу.
+                // Короткая пауза только у повторного входа в ту же комнату, чтобы не мигать ростером.
+                var graceSeconds = isNativeSocket ? (nativeGraceSeconds ?? 0) : _sessions.GraceSeconds;
                 var useGrace = !skipGrace && graceSeconds > 0
                     && ((isSfuSocket && _gateway.Enabled) || isNativeSocket);
                 if (useGrace
@@ -673,6 +683,7 @@ internal sealed class VoiceSignalingServer
         List<Guid> muted = new();
         List<Guid> deaf = new();
         List<Guid> speaking = new();
+        List<Guid> sharers = new();
         var now = DateTime.UtcNow;
         lock (_sync)
         {
@@ -684,6 +695,13 @@ internal sealed class VoiceSignalingServer
                 foreach (var s in set) sockets.Add(s);
             }
             var active = new HashSet<Guid>(userIds);
+            if (_roomScreenSharers.TryGetValue(roomId, out var ss))
+            {
+                foreach (var uid in ss)
+                {
+                    if (active.Contains(uid)) sharers.Add(uid);
+                }
+            }
             if (_roomUserFlags.TryGetValue(roomId, out var flags))
             {
                 foreach (var (uid, f) in flags)
@@ -704,6 +722,9 @@ internal sealed class VoiceSignalingServer
         }
 
         if (sockets.Count == 0) return;
+        var sessionByUser = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var uid in userIds)
+            sessionByUser[uid.ToString("D")] = NativeVoicePacket.DeriveSessionId(uid, roomId);
         var payload = new
         {
             type = "roomRoster",
@@ -711,7 +732,9 @@ internal sealed class VoiceSignalingServer
             userIds = userIds.Select(x => x.ToString("D")).ToList(),
             mutedUserIds = muted.Select(x => x.ToString("D")).Distinct().ToList(),
             deafenedUserIds = deaf.Select(x => x.ToString("D")).Distinct().ToList(),
-            speakingUserIds = speaking.Select(x => x.ToString("D")).Distinct().ToList()
+            speakingUserIds = speaking.Select(x => x.ToString("D")).Distinct().ToList(),
+            screenShareUserIds = sharers.Select(x => x.ToString("D")).Distinct().ToList(),
+            nativeSessionByUserId = sessionByUser
         };
         await Task.WhenAll(sockets.Select(s => SendJsonAsync(s, payload, ct)));
     }

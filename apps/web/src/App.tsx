@@ -983,20 +983,24 @@ function App() {
   const voicePresenceFetched = useRef(new Set());
   const [voicePresenceByChannelId, setVoicePresenceByChannelId] = useState({});
   const isUserSpeakingInVoice = useCallback((userId, channelId) => {
-    if (voiceState.deafened) return false;
     const id = String(userId || "");
     const cid = String(channelId || "");
+    if (!id || !cid) return false;
+    const presence = voicePresenceByChannelId[cid];
+    const presenceSpeaking = (presence?.speakingUserIds || []).some((x) => String(x) === id);
     const activeCid = String(activeVoiceChannelId || "");
-    if (!id || !cid || !activeCid) return false;
-    if (!voiceState.connected || activeCid !== cid) return false;
+    const inThis = !!voiceState.connected && activeCid === cid;
+    if (!inThis) return presenceSpeaking;
+    if (voiceState.deafened) return false;
     if (id === String(profile?.id || "")) {
       if (voiceState.muted || voiceState.deafened) return false;
-    } else if ((voiceState.mutedUserIds || []).some((x) => String(x) === id)) {
+    } else if ((presence?.mutedUserIds || voiceState.mutedUserIds || []).some((x) => String(x) === id)) {
       return false;
     }
-    return (voiceState.speakingUserIds || []).some((x) => String(x) === id);
+    return presenceSpeaking || (voiceState.speakingUserIds || []).some((x) => String(x) === id);
   }, [
     activeVoiceChannelId,
+    voicePresenceByChannelId,
     voiceState.connected,
     voiceState.muted,
     voiceState.deafened,
@@ -1358,6 +1362,7 @@ function App() {
   const shouldAutoScrollRef = useRef(true);
   const scrollStickRef = useRef({ raf: 0 });
   const voiceStateRef = useRef(null);
+  const applyVoicePresenceRef = useRef(null);
   const activeVoiceChannelIdRef = useRef("");
   const pageStateRef = useRef({}); // key -> { loadingOlder: bool, hasMoreOlder: bool }
   const loadOlderInFlightRef = useRef(false);
@@ -1371,6 +1376,68 @@ function App() {
   useEffect(() => {
     activeVoiceChannelIdRef.current = String(activeVoiceChannelId || "");
   }, [activeVoiceChannelId]);
+
+  applyVoicePresenceRef.current = (chId, payload) => {
+    const key = String(chId || "");
+    if (!key || !payload) return;
+    const userIds = (payload.userIds || []).map((x) => String(x)).filter(Boolean);
+    const screenShareUserIds = (payload.screenShareUserIds || []).map((x) => String(x));
+    const mutedUserIds = (payload.mutedUserIds || []).map((x) => String(x));
+    const deafenedUserIds = (payload.deafenedUserIds || []).map((x) => String(x));
+    const speakingUserIds = (payload.speakingUserIds || []).map((x) => String(x));
+    setVoicePresenceByChannelId((prev) => {
+      const prevEntry = prev[key] || {};
+      const prevIds = (prevEntry.userIds || []).map((x) => String(x)).filter(Boolean);
+      const wasEmpty = prevIds.length === 0;
+      const incomingStarted = payload.startedAtUtc ? String(payload.startedAtUtc) : "";
+      let startedAtUtc = "";
+      if (userIds.length > 0) {
+        if (wasEmpty) {
+          startedAtUtc = incomingStarted || new Date().toISOString();
+        } else {
+          const prevStarted = prevEntry.startedAtUtc ? String(prevEntry.startedAtUtc) : "";
+          if (prevStarted && incomingStarted) {
+            const prevMs = Date.parse(prevStarted);
+            const incomingMs = Date.parse(incomingStarted);
+            startedAtUtc = (Number.isFinite(prevMs) && Number.isFinite(incomingMs) && prevMs <= incomingMs)
+              ? prevStarted
+              : (prevStarted || incomingStarted);
+          } else {
+            startedAtUtc = prevStarted || incomingStarted;
+          }
+        }
+      }
+      return {
+        ...prev,
+        [key]: {
+          channelId: key,
+          userIds,
+          screenShareUserIds,
+          mutedUserIds,
+          deafenedUserIds,
+          speakingUserIds,
+          startedAtUtc,
+        }
+      };
+    });
+    const meId = String(profileRef.current?.id || "");
+    const activeCid = String(activeVoiceChannelIdRef.current || "");
+    const locallyHere = key === activeCid && (voiceStateRef.current?.connected || voiceStateRef.current?.joining);
+    if (!locallyHere) return;
+    setVoiceState((prev) => {
+      if (!prev || (!prev.connected && !prev.joining)) return prev;
+      return {
+        ...prev,
+        rosterUserIds: userIds,
+        remotePeerUserIds: userIds.filter((id) => id && id !== meId),
+        peers: Math.max(0, userIds.length - 1),
+        speakingUserIds,
+        screenShareUserIds,
+        mutedUserIds,
+        deafenedUserIds,
+      };
+    });
+  };
 
   function pageKey() {
     return `${String(uiModeRef.current)}:${String(selectedChannelIdRef.current)}`;
@@ -3106,16 +3173,12 @@ function App() {
     prev.forEach((id) => { if (!cur.has(id)) left += 1; });
     lastVoiceRosterRef.current.ids = cur;
 
-    // Play once per change batch.
-    if (joined > 0) {
-      const dt = Date.now() - (lastSelfVoiceConnectAtRef.current || 0);
-      if (dt < 900) {
-        // We already played a join when the local client finished connecting; skip the "snapshot" join burst.
-        return;
-      }
-      playVoiceSfx("join");
-    } else if (left > 0) {
+    if (left > 0) {
       playVoiceSfx("leave");
+    } else if (joined > 0) {
+      const dt = Date.now() - (lastSelfVoiceConnectAtRef.current || 0);
+      if (dt < 900) return;
+      playVoiceSfx("join");
     }
   }, [voiceState.connected, voiceState.room, (voiceState.rosterUserIds || []).join(","), profile?.id]);
 
@@ -3446,52 +3509,7 @@ function App() {
     connection.on(RT.VoicePresenceUpdated, (payload) => {
       const chId = payload?.channelId;
       if (!chId) return;
-      let userIds = (payload.userIds || []).map((x) => String(x)).filter(Boolean);
-      const meId = String(profileRef.current?.id || "");
-      const activeCid = String(activeVoiceChannelIdRef.current || "");
-      if (
-        meId &&
-        String(chId) === activeCid &&
-        (voiceStateRef.current?.connected || voiceStateRef.current?.joining)
-      ) {
-        if (!userIds.includes(meId)) userIds = [...userIds, meId];
-      }
-      setVoicePresenceByChannelId((prev) => {
-        const key = String(chId);
-        const prevEntry = prev[key] || {};
-        const prevIds = (prevEntry.userIds || []).map((x) => String(x)).filter(Boolean);
-        const wasEmpty = prevIds.length === 0;
-        const incomingStarted = payload.startedAtUtc ? String(payload.startedAtUtc) : "";
-        let startedAtUtc = "";
-        if (userIds.length > 0) {
-          if (wasEmpty) {
-            startedAtUtc = incomingStarted || new Date().toISOString();
-          } else {
-            const prevStarted = prevEntry.startedAtUtc ? String(prevEntry.startedAtUtc) : "";
-            if (prevStarted && incomingStarted) {
-              const prevMs = Date.parse(prevStarted);
-              const incomingMs = Date.parse(incomingStarted);
-              startedAtUtc = (Number.isFinite(prevMs) && Number.isFinite(incomingMs) && prevMs <= incomingMs)
-                ? prevStarted
-                : (prevStarted || incomingStarted);
-            } else {
-              startedAtUtc = prevStarted || incomingStarted;
-            }
-          }
-        }
-        return {
-          ...prev,
-          [key]: {
-            channelId: key,
-            userIds,
-            screenShareUserIds: (payload.screenShareUserIds || []).map((x) => String(x)),
-            mutedUserIds: (payload.mutedUserIds || []).map((x) => String(x)),
-            deafenedUserIds: (payload.deafenedUserIds || []).map((x) => String(x)),
-            speakingUserIds: (payload.speakingUserIds || []).map((x) => String(x)),
-            startedAtUtc,
-          }
-        };
-      });
+      applyVoicePresenceRef.current?.(chId, payload);
     });
 
     connection.on(RT.UserPresenceUpdated, (payload) => {
@@ -3858,19 +3876,7 @@ function App() {
         try {
           const p = await api(`/channels/${id}/voice/presence`, { method: "GET" });
           if (!alive || !p) continue;
-          setVoicePresenceByChannelId((prev) => ({
-            ...prev,
-            [id]: {
-              ...(prev[id] || {}),
-              ...p,
-              channelId: id,
-              userIds: Array.isArray(p.userIds) ? p.userIds.map((x) => String(x)) : [],
-              screenShareUserIds: Array.isArray(p.screenShareUserIds) ? p.screenShareUserIds.map((x) => String(x)) : [],
-              mutedUserIds: Array.isArray(p.mutedUserIds) ? p.mutedUserIds.map((x) => String(x)) : [],
-              deafenedUserIds: Array.isArray(p.deafenedUserIds) ? p.deafenedUserIds.map((x) => String(x)) : [],
-              speakingUserIds: Array.isArray(p.speakingUserIds) ? p.speakingUserIds.map((x) => String(x)) : [],
-            },
-          }));
+          applyVoicePresenceRef.current?.(id, p);
         } catch {
           /* ignore */
         }
@@ -3893,37 +3899,7 @@ function App() {
         voicePresenceFetched.current.add(id);
         try {
           const p = await api(`/channels/${id}/voice/presence`, { method: "GET" });
-          setVoicePresenceByChannelId((prev) => {
-            const prevEntry = prev[id] || {};
-            const userIds = Array.isArray(p?.userIds) ? p.userIds : [];
-            const prevIds = (prevEntry.userIds || []).map((x) => String(x)).filter(Boolean);
-            const wasEmpty = prevIds.length === 0;
-            let startedAtUtc = "";
-            if (userIds.length > 0) {
-              const incomingStarted = p?.startedAtUtc ? String(p.startedAtUtc) : "";
-              if (wasEmpty) {
-                startedAtUtc = incomingStarted || new Date().toISOString();
-              } else {
-                const prevStarted = prevEntry.startedAtUtc ? String(prevEntry.startedAtUtc) : "";
-                if (prevStarted && incomingStarted) {
-                  const prevMs = Date.parse(prevStarted);
-                  const incomingMs = Date.parse(incomingStarted);
-                  startedAtUtc = (Number.isFinite(prevMs) && Number.isFinite(incomingMs) && prevMs <= incomingMs)
-                    ? prevStarted
-                    : (prevStarted || incomingStarted);
-                } else {
-                  startedAtUtc = prevStarted || incomingStarted;
-                }
-              }
-            }
-            return {
-              ...prev,
-              [id]: {
-                ...p,
-                startedAtUtc,
-              },
-            };
-          });
+          if (p) applyVoicePresenceRef.current?.(id, p);
         } catch {
           // ignore
         }
@@ -8817,9 +8793,9 @@ function App() {
               const meId = String(profile?.id || "");
               const isConnectedHere = String(activeVoiceChannelId) === pid && (voiceState.connected || voiceState.joining);
               const presence = voicePresenceByChannelId[pid];
-              const ids = (isConnectedHere
-                ? ((voiceState.rosterUserIds && voiceState.rosterUserIds.length > 0) ? voiceState.rosterUserIds : (presence?.userIds || []))
-                : (presence?.userIds || []))
+              const ids = (Array.isArray(presence?.userIds)
+                ? presence.userIds
+                : (isConnectedHere ? (voiceState.rosterUserIds || []) : []))
                 .map((x) => String(x))
                 .filter(Boolean);
               const presenceIds = (presence?.userIds || [])
@@ -8827,9 +8803,12 @@ function App() {
                 .filter((id) => id && id !== meId);
               if (isConnectedHere ? !ids.length : !presenceIds.length) return null;
 
-              const sharers = isConnectedHere
-                ? mergeScreenShareUserIds(voiceState.screenShareUserIds, presence?.screenShareUserIds)
-                : new Set((presence?.screenShareUserIds || []).map((x) => String(x)).filter(Boolean));
+              const sharers = new Set(
+                (Array.isArray(presence?.screenShareUserIds)
+                  ? presence.screenShareUserIds
+                  : (isConnectedHere ? (voiceState.screenShareUserIds || []) : [])
+                ).map((x) => String(x)).filter(Boolean)
+              );
               const others = (isConnectedHere ? ids : presenceIds).filter((x) => x && x !== meId);
               const meSpeaking = isUserSpeakingInVoice(meId, pid);
               const meSharing = sharers.has(String(meId)) || !!voiceState.sharingScreen;
@@ -8853,14 +8832,12 @@ function App() {
                       </li>
                     )}
                     {others.map((id) => {
-                      const isSp = isConnectedHere && isUserSpeakingInVoice(id, pid);
+                      const isSp = isUserSpeakingInVoice(id, pid);
                       const isSharing = sharers.has(String(id));
-                      const isMuted = isConnectedHere
-                        ? (voiceState.mutedUserIds || []).some((x) => String(x) === String(id))
-                        : (presence?.mutedUserIds || []).some((x) => String(x) === String(id));
-                      const isDeaf = isConnectedHere
-                        ? (voiceState.deafenedUserIds || []).some((x) => String(x) === String(id))
-                        : (presence?.deafenedUserIds || []).some((x) => String(x) === String(id));
+                      const mutedList = Array.isArray(presence?.mutedUserIds) ? presence.mutedUserIds : (voiceState.mutedUserIds || []);
+                      const deafList = Array.isArray(presence?.deafenedUserIds) ? presence.deafenedUserIds : (voiceState.deafenedUserIds || []);
+                      const isMuted = mutedList.some((x) => String(x) === String(id));
+                      const isDeaf = deafList.some((x) => String(x) === String(id));
                       return (
                         <li key={`dmvpi-${pid}-${id}`} className={isSp ? "is-speaking" : ""}>
                           <span className={`voice-member-avatar ${isSp ? "is-speaking" : ""}`}>
@@ -9618,9 +9595,9 @@ function App() {
               const isConnectedHere = String(activeVoiceChannelId) === pid && (voiceState.connected || voiceState.joining);
               const presence = voicePresenceByChannelId[pid];
               const meId = String(profile?.id || "");
-              const ids = (isConnectedHere
-                ? ((voiceState.rosterUserIds && voiceState.rosterUserIds.length > 0) ? voiceState.rosterUserIds : (presence?.userIds || []))
-                : (presence?.userIds || []))
+              const ids = (Array.isArray(presence?.userIds)
+                ? presence.userIds
+                : (isConnectedHere ? (voiceState.rosterUserIds || []) : []))
                 .map((x) => String(x))
                 .filter(Boolean);
               const presenceIds = (presence?.userIds || [])
@@ -9628,9 +9605,12 @@ function App() {
                 .filter((id) => id && id !== meId);
               if (isConnectedHere ? !ids.length : !presenceIds.length) return null;
 
-              const sharers = isConnectedHere
-                ? mergeScreenShareUserIds(voiceState.screenShareUserIds, presence?.screenShareUserIds)
-                : new Set((presence?.screenShareUserIds || []).map((x) => String(x)).filter(Boolean));
+              const sharers = new Set(
+                (Array.isArray(presence?.screenShareUserIds)
+                  ? presence.screenShareUserIds
+                  : (isConnectedHere ? (voiceState.screenShareUserIds || []) : [])
+                ).map((x) => String(x)).filter(Boolean)
+              );
               const others = (isConnectedHere ? ids : presenceIds).filter((x) => x && x !== meId);
               const meSpeaking = isUserSpeakingInVoice(meId, pid);
               const meSharing = sharers.has(String(meId)) || !!voiceState.sharingScreen;
@@ -9654,14 +9634,12 @@ function App() {
                       </li>
                     )}
                     {others.map((id) => {
-                      const isSp = isConnectedHere && isUserSpeakingInVoice(id, pid);
+                      const isSp = isUserSpeakingInVoice(id, pid);
                       const isSharing = sharers.has(String(id));
-                      const isMuted = isConnectedHere
-                        ? (voiceState.mutedUserIds || []).some((x) => String(x) === String(id))
-                        : (presence?.mutedUserIds || []).some((x) => String(x) === String(id));
-                      const isDeaf = isConnectedHere
-                        ? (voiceState.deafenedUserIds || []).some((x) => String(x) === String(id))
-                        : (presence?.deafenedUserIds || []).some((x) => String(x) === String(id));
+                      const mutedList = Array.isArray(presence?.mutedUserIds) ? presence.mutedUserIds : (voiceState.mutedUserIds || []);
+                      const deafList = Array.isArray(presence?.deafenedUserIds) ? presence.deafenedUserIds : (voiceState.deafenedUserIds || []);
+                      const isMuted = mutedList.some((x) => String(x) === String(id));
+                      const isDeaf = deafList.some((x) => String(x) === String(id));
                       return (
                         <li key={`dmvp-${pid}-${id}`} className={isSp ? "is-speaking" : ""}>
                           <span className={`voice-member-avatar ${isSp ? "is-speaking" : ""}`}>

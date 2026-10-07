@@ -284,11 +284,9 @@
       }
       try {
         const opts = await api.getOptions();
-        if (opts.audioRequested) {
-          audioWrap.style.display = "flex";
-          // Screen share UX: if user requested audio, enable it by default for "screen".
-          try { audioCb.checked = true; } catch (_) {}
-        }
+        audioWrap.style.display = "flex";
+        try { audioCb.checked = true; } catch (_) {}
+        void opts;
         setTabUi("screen");
         await reloadGrid();
       } catch (e) {
@@ -305,8 +303,6 @@
       // Games/3D apps: prefer conservative defaults to reduce capture overhead.
       try { selQuality.value = "720"; } catch (_) {}
       try { selFps.value = "30"; } catch (_) {}
-      // Window capture: default to no audio (system audio capture is not "window-only").
-      try { audioCb.checked = false; } catch (_) {}
       await reloadGrid();
     });
 

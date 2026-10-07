@@ -30,6 +30,15 @@ let pendingDisplaySelection: {
   withSystemAudio: boolean;
 } | null = null;
 
+/** Пока демонстрация уже идёт, повторный getDisplayMedia не открывает окно выбора. */
+let captureLive = false;
+let activeCaptureSource: Electron.DesktopCapturerSource | null = null;
+
+export function setDisplayCaptureLive(live: boolean): void {
+  captureLive = !!live;
+  if (!captureLive) activeCaptureSource = null;
+}
+
 export function takeDisplaySelectionNow(): {
   tab: "screen" | "window";
   sourceId: string;
@@ -103,7 +112,7 @@ export function registerDisplayPickerIpc(): void {
   });
 
   ipcMain.handle("display-picker:get-options", async () => ({
-    audioRequested: pendingAudioRequested,
+    audioRequested: true,
   }));
 
   ipcMain.handle(
@@ -175,6 +184,8 @@ function confirmPicker(id: string, withSystemAudio: boolean, profile: DisplayCap
     sourceId: String(id || ""),
     withSystemAudio: !!withSystemAudio,
   };
+  activeCaptureSource = src;
+  captureLive = true;
   pickerCallbackUsed = true;
   displayPickerBusy = false;
 
@@ -204,6 +215,10 @@ export async function openDisplayMediaPickerWindow(
   },
   callback: DisplayMediaCb
 ): Promise<void> {
+  if (captureLive && activeCaptureSource) {
+    callback({ video: activeCaptureSource });
+    return;
+  }
   const now0 = Date.now();
   if (now0 < suppressOpenUntilMs) {
     callback(null);

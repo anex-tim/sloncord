@@ -51,6 +51,7 @@ type SloncordNativeVoiceBridge = {
   onNativeRemoteVideo?: (cb: (detail: { sessionId: number; jpegBase64: string }) => void) => () => void;
   onNativeVoiceError?: (cb: (msg: string) => void) => () => void;
   takeDisplaySelection?: () => Promise<{ tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null>;
+  setDisplayCaptureLive?: (live: boolean) => Promise<{ ok: boolean }>;
   startNativeScreenAudio?: (
     selection?: { tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null
   ) => Promise<{ ok: boolean; error?: string }>;
@@ -84,6 +85,8 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
   let lastNativeUdpRefreshAt = 0;
   let nativeUdpRefreshInFlight: Promise<void> | null = null;
   let screenSharing = false;
+  const serverSessionByUser = new Map<string, number>();
+  let watchedScreenUserId = "";
   let screenStream: MediaStream | null = null;
   let screenCaptureTimer: ReturnType<typeof setInterval> | null = null;
   let screenVideoEl: HTMLVideoElement | null = null;
@@ -123,6 +126,11 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     const next = new Map<number, string>();
     for (const uid of ids) {
       if (!uid || uid === String(opts.selfUserId)) continue;
+      const fromServer = serverSessionByUser.get(String(uid).toLowerCase());
+      if (fromServer && fromServer > 0) {
+        next.set(fromServer, uid);
+        continue;
+      }
       try {
         next.set(await deriveNativeSessionId(uid, opts.roomId), uid);
       } catch {
@@ -130,7 +138,12 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       }
     }
     try {
-      next.set(await deriveNativeSessionId(String(opts.selfUserId), opts.roomId), String(opts.selfUserId));
+      const selfId = String(opts.selfUserId);
+      const fromServer = serverSessionByUser.get(selfId.toLowerCase());
+      next.set(
+        fromServer && fromServer > 0 ? fromServer : await deriveNativeSessionId(selfId, opts.roomId),
+        selfId
+      );
     } catch {
       /* ignore */
     }
@@ -138,6 +151,24 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     sessionToUserId.clear();
     for (const [sid, uid] of next) sessionToUserId.set(sid, uid);
     flushPendingFrames();
+  }
+
+  async function setWatchScreen(userId: string) {
+    const id = String(userId || "");
+    watchedScreenUserId = id;
+    if (!id) {
+      void bridge()?.setNativeVoiceWatchScreen?.(0);
+      return;
+    }
+    try {
+      const fromServer = serverSessionByUser.get(id.toLowerCase());
+      const sid = fromServer && fromServer > 0
+        ? fromServer
+        : await deriveNativeSessionId(id, opts.roomId);
+      void bridge()?.setNativeVoiceWatchScreen?.(sid);
+    } catch {
+      /* ignore */
+    }
   }
 
   const presence = createNativePresenceClient({
@@ -162,17 +193,29 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     },
     onRoomRoster: (msg) => {
       const ids = Array.isArray(msg.userIds) ? msg.userIds.map((x) => String(x)) : [];
+      const rawSessions = msg.nativeSessionByUserId;
+      if (rawSessions && typeof rawSessions === "object") {
+        serverSessionByUser.clear();
+        for (const [k, v] of Object.entries(rawSessions as Record<string, unknown>)) {
+          const n = Number(v);
+          if (Number.isFinite(n) && n > 0) serverSessionByUser.set(String(k).toLowerCase(), n);
+        }
+      }
       lastRoster = ids;
       void rebuildSessionMap();
-      setState({
+      const patch: Record<string, unknown> = {
         rosterUserIds: ids,
         remotePeerUserIds: ids.filter((id) => id && id !== String(opts.selfUserId)),
         peers: Math.max(0, ids.length - 1),
         speakingUserIds: Array.isArray(msg.speakingUserIds) ? msg.speakingUserIds.map(String) : [],
-        screenShareUserIds: Array.isArray(msg.screenShareUserIds) ? msg.screenShareUserIds.map(String) : [],
         mutedUserIds: Array.isArray(msg.mutedUserIds) ? msg.mutedUserIds.map(String) : [],
         deafenedUserIds: Array.isArray(msg.deafenedUserIds) ? msg.deafenedUserIds.map(String) : [],
-      });
+      };
+      if (Array.isArray(msg.screenShareUserIds)) {
+        patch.screenShareUserIds = msg.screenShareUserIds.map(String);
+      }
+      setState(patch);
+      if (watchedScreenUserId) void setWatchScreen(watchedScreenUserId);
     },
   });
 
@@ -287,7 +330,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     }, 4000);
   }
 
-  function stopScreenShareInternal() {
+  async function stopScreenShareInternal() {
     const wasSharing = screenSharing;
     screenSharing = false;
     try {
@@ -305,6 +348,11 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     screenStream = null;
     screenVideoEl = null;
     screenCanvas = null;
+    try {
+      await bridge()?.setDisplayCaptureLive?.(false);
+    } catch {
+      /* ignore */
+    }
     if (wasSharing) publishScreenFlag(false);
   }
 
@@ -312,11 +360,11 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     const b = bridge();
     // Источник выбирает Electron в setDisplayMediaRequestHandler.
     // chromeMediaSource/mandatory в getDisplayMedia даёт "exact constraints are not supported".
-    // audio:true только чтобы в окне выбора была галочка звука.
-    // Сам Chromium получает лишь видео: системный звук, если галочка включена, берёт WASAPI.
+    // audio:false — иначе Chromium снова вызывает выбор источника, потому что
+    // обработчик отдаёт только видео. Галочка системного звука живёт в нашем окне.
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
-      audio: true,
+      audio: false,
     });
     const videoTrack = stream.getVideoTracks?.()?.[0];
     if (!videoTrack) {
@@ -324,7 +372,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       throw new Error("Не удалось начать демонстрацию экрана.");
     }
     videoTrack.addEventListener("ended", () => {
-      stopScreenShareInternal();
+      void stopScreenShareInternal();
     });
     let selection: { tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null = null;
     try {
@@ -361,7 +409,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       if (frameBusy || !screenSharing || !screenVideoEl || !screenCanvas || !b?.sendNativeVideoFrame) return;
       const track = screenStream?.getVideoTracks?.()?.[0];
       if (!track || track.readyState !== "live") {
-        stopScreenShareInternal();
+        void stopScreenShareInternal();
         return;
       }
       const vw = screenVideoEl.videoWidth;
@@ -457,13 +505,13 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
 
     async toggleScreenShare() {
       if (screenSharing) {
-        stopScreenShareInternal();
+        await stopScreenShareInternal();
         return;
       }
       try {
         await startScreenShareInternal();
       } catch (e) {
-        stopScreenShareInternal();
+        await stopScreenShareInternal();
         const msg = (e && typeof e === "object" && "message" in e && (e as Error).message) || String(e);
         opts.onScreenAudioError?.(msg);
         throw e;
@@ -472,7 +520,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
 
     async reconfigureScreenShare() {
       if (!screenSharing) return;
-      stopScreenShareInternal();
+      await stopScreenShareInternal();
       await startScreenShareInternal();
     },
 
@@ -501,19 +549,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       void setWatchScreen(Number(pct) > 0 ? String(pid || "") : "");
     },
 
-    async setWatchScreen(userId: string) {
-      const id = String(userId || "");
-      if (!id) {
-        void bridge()?.setNativeVoiceWatchScreen?.(0);
-        return;
-      }
-      try {
-        const sid = await deriveNativeSessionId(id, opts.roomId);
-        void bridge()?.setNativeVoiceWatchScreen?.(sid);
-      } catch {
-        /* ignore */
-      }
-    },
+    setWatchScreen,
 
     getInputMeter() {
       return meter;

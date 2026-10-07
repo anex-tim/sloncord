@@ -22,6 +22,7 @@ import Store from "electron-store";
 import {
   openDisplayMediaPickerWindow,
   registerDisplayPickerIpc,
+  setDisplayCaptureLive,
   takeDisplaySelectionNow,
 } from "./displayPicker";
 import {
@@ -1080,6 +1081,11 @@ ipcMain.handle("sloncord:stop-native-screen-audio", async (): Promise<{ ok: bool
   return { ok: true };
 });
 
+ipcMain.handle("sloncord:set-display-capture-live", async (_e, live: boolean): Promise<{ ok: boolean }> => {
+  setDisplayCaptureLive(!!live);
+  return { ok: true };
+});
+
 ipcMain.handle(
   "sloncord:start-native-screen-audio",
   async (
@@ -1148,21 +1154,12 @@ ipcMain.handle(
       let pipeLeftover = Buffer.alloc(0);
       let started: { proc: ReturnType<typeof spawn>; reader: fs.ReadStream; pipe: string };
 
-      if (sel.tab === "window") {
-        const pipe = `\\\\.\\pipe\\sloncord-audio-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
-        const args: string[] = ["--pipe", pipe, "--mode", "window"];
-        const hwnd = parseDesktopCapturerHwnd(sel.sourceId);
-        if (!hwnd) throw new Error("Не удалось распарсить HWND из sourceId.");
-        args.push("--targetHwnd", hwnd.toString());
-        const proc = spawn(helperPath, args, { windowsHide: true, stdio: "ignore" });
-        const reader = await connectNamedPipeReadStream(pipe);
-        started = { proc, reader, pipe };
-      } else {
-        const capture = await tryStartScreenCapture();
-        started = capture.started;
-        captureMode = capture.captureMode;
-        excludeRootPid = capture.excludeRootPid;
-      }
+      // И экран, и окно: системный микс без звука самого Sloncord.
+      // Захват только процесса окна не отдаёт звук других программ.
+      const capture = await tryStartScreenCapture();
+      started = capture.started;
+      captureMode = capture.captureMode;
+      excludeRootPid = capture.excludeRootPid;
 
       nativeAudioHelper = {
         proc: started.proc,
