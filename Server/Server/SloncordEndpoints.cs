@@ -477,8 +477,15 @@ internal static class SloncordEndpoints
             if (me is null) return Results.Unauthorized();
             var f = await db.Files.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
             if (f is null) return Results.NotFound(new { error = "Файл не найден" });
-            var isAvatar = await db.Users.AsNoTracking().AnyAsync(u => u.AvatarFileId == id);
-            if (!isAvatar && !await UserCanAccessFileAsync(ctx, db, me.Id, id)) return Results.Forbid();
+            var isUserAvatar = await db.Users.AsNoTracking().AnyAsync(u => u.AvatarFileId == id);
+            var isServerAvatar = await db.Servers.AsNoTracking().AnyAsync(s =>
+                s.AvatarFileId == id &&
+                db.ServerMembers.Any(m => m.ServerId == s.Id && m.UserId == me.Id));
+            var isChannelAvatar = await db.Channels.AsNoTracking().AnyAsync(c =>
+                c.AvatarFileId == id &&
+                db.ChannelMembers.Any(m => m.ChannelId == c.Id && m.UserId == me.Id));
+            if (!isUserAvatar && !isServerAvatar && !isChannelAvatar && !await UserCanAccessFileAsync(ctx, db, me.Id, id))
+                return Results.Forbid();
             var path = SloncordStoragePath.ResolveInside(s.StorageDir, f.StorageName);
             if (path is null || !File.Exists(path)) return Results.NotFound(new { error = "Файл отсутствует на сервере" });
             if (new FileInfo(path).Length > 8 * 1024 * 1024)

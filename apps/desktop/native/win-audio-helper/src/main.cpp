@@ -111,8 +111,9 @@ static bool init_loopback_default(IMMDevice* device, Capture& result) {
     bool useEvent;
   };
   const Attempt attempts[] = {
-    { "mix-evt-20ms", AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 20 * 10000, false, true },
+    { "mix-poll-0", AUDCLNT_STREAMFLAGS_LOOPBACK, 0, false, false },
     { "mix-evt-0", AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 0, false, true },
+    { "mix-evt-20ms", AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 20 * 10000, false, true },
     { "mix-poll-20ms", AUDCLNT_STREAMFLAGS_LOOPBACK, 20 * 10000, false, false },
     { "pcm-evt-0", AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, 0, true, true },
   };
@@ -122,7 +123,7 @@ static bool init_loopback_default(IMMDevice* device, Capture& result) {
     HRESULT hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&ac);
     if (FAILED(hr) || !ac) {
       log_hr("loopback.Activate", FAILED(hr) ? hr : E_FAIL);
-      return false;
+      continue;
     }
     WAVEFORMATEX* mix = nullptr;
     if (a.fixedPcm) {
@@ -134,7 +135,8 @@ static bool init_loopback_default(IMMDevice* device, Capture& result) {
       ac->Release();
       continue;
     }
-    hr = ac->Initialize(AUDCLNT_SHAREMODE_SHARED, a.flags, a.dur, 0, mix, nullptr);
+    GUID session = {};
+    hr = ac->Initialize(AUDCLNT_SHAREMODE_SHARED, a.flags, a.dur, 0, mix, &session);
     if (hr == 0x88890019 /* AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED */) {
       REFERENCE_TIME defPeriod = 0, minPeriod = 0;
       REFERENCE_TIME aligned = 0;
@@ -148,7 +150,7 @@ static bool init_loopback_default(IMMDevice* device, Capture& result) {
       if (!a.fixedPcm) {
         if (FAILED(ac->GetMixFormat(&mix)) || !mix) { ac->Release(); continue; }
       }
-      hr = ac->Initialize(AUDCLNT_SHAREMODE_SHARED, a.flags, aligned, 0, mix, nullptr);
+      hr = ac->Initialize(AUDCLNT_SHAREMODE_SHARED, a.flags, aligned, 0, mix, &session);
     }
     if (FAILED(hr)) {
       log_hr(a.name, hr);
@@ -644,23 +646,39 @@ int main(int argc, char** argv) {
       CloseHandle(pipe);
       return 7;
     }
-    IMMDevice* device = nullptr;
-    hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
-    enumerator->Release();
-    if (FAILED(hr) || !device) {
-      if (avrt) AvRevertMmThreadCharacteristics(avrt);
-      CoUninitialize();
-      CloseHandle(pipe);
-      return 7;
-    }
-    if (!init_loopback_default(device, mainCap)) {
+    bool opened = false;
+    const ERole roles[] = { eConsole, eMultimedia, eCommunications };
+    for (ERole role : roles) {
+      IMMDevice* device = nullptr;
+      if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, role, &device)) || !device) continue;
+      if (init_loopback_default(device, mainCap)) {
+        device->Release();
+        opened = true;
+        break;
+      }
       device->Release();
+    }
+    if (!opened) {
+      IMMDeviceCollection* col = nullptr;
+      if (SUCCEEDED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col)) && col) {
+        UINT count = 0;
+        col->GetCount(&count);
+        for (UINT i = 0; i < count && !opened; i++) {
+          IMMDevice* device = nullptr;
+          if (FAILED(col->Item(i, &device)) || !device) continue;
+          if (init_loopback_default(device, mainCap)) opened = true;
+          device->Release();
+        }
+        col->Release();
+      }
+    }
+    enumerator->Release();
+    if (!opened) {
       if (avrt) AvRevertMmThreadCharacteristics(avrt);
       CoUninitialize();
       CloseHandle(pipe);
       return 9;
     }
-    device->Release();
   } else if (a.mode == "window") {
     if (!a.targetPid && a.targetHwnd) {
       DWORD pid = 0;
