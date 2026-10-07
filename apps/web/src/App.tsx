@@ -628,6 +628,43 @@ function formatPlatformBanMessage(data) {
   return msg;
 }
 
+function HoldToRevealPassword({ placeholder, value, onChange, style }) {
+  const [shown, setShown] = useState(false);
+  const hide = () => setShown(false);
+  return (
+    <div className="pwd-field">
+      <input
+        placeholder={placeholder}
+        type={shown ? "text" : "password"}
+        value={value}
+        autoComplete="off"
+        onChange={onChange}
+        style={style}
+      />
+      <button
+        type="button"
+        className="pwd-eye"
+        aria-label="Показать пароль, пока кнопка зажата"
+        onPointerDown={(e) => {
+          e.preventDefault();
+          setShown(true);
+        }}
+        onPointerUp={hide}
+        onPointerCancel={hide}
+        onPointerLeave={hide}
+        onBlur={hide}
+      >
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M12 5c5.5 0 9.5 4.2 10.8 6.1a1.4 1.4 0 0 1 0 1.8C21.5 14.8 17.5 19 12 19S2.5 14.8 1.2 12.9a1.4 1.4 0 0 1 0-1.8C2.5 9.2 6.5 5 12 5zm0 2C7.7 7 4.4 10.2 3.2 12 4.4 13.8 7.7 17 12 17s7.6-3.2 8.8-5C19.6 10.2 16.3 7 12 7zm0 2.2A2.8 2.8 0 1 1 12 14.8 2.8 2.8 0 0 1 12 9.2z"
+          />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
 function App() {
   const MESSAGES_PAGE_SIZE = 30;
   const [mode, setMode] = useState("login");
@@ -3522,11 +3559,13 @@ function App() {
     });
 
     connection.on(RT.SessionsRevoked, (payload) => {
-      const approvalRevoked = String(payload?.reason || "") === "approval_revoked";
+      const reason = String(payload?.reason || "");
       setError(
-        approvalRevoked
+        reason === "approval_revoked"
           ? "Одобрение аккаунта отозвано. Войти можно после повторного одобрения модератором."
-          : "Модератор завершил все ваши сессии. Войдите снова."
+          : reason === "password_changed"
+            ? "Пароль изменён. Войдите снова с новым паролем."
+            : "Модератор завершил все ваши сессии. Войдите снова."
       );
       setMode("login");
       logout();
@@ -3631,7 +3670,8 @@ function App() {
         await connection.invoke("ResyncGroups");
         dispatchDesktopReleaseCheckIfDesktop();
       } catch (e) {
-        setError(e.message || String(e));
+        const msg = String(e?.message || e || "");
+        if (msg && !/^realtime_/i.test(msg)) setError(msg);
       }
     })();
 
@@ -5320,6 +5360,14 @@ function App() {
           method: "PUT",
           body: JSON.stringify({ currentPassword: pwdForm.current, newPassword: next })
         });
+        setProfile(updated);
+        setShowEditProfile(false);
+        setPwdForm({ current: "", next: "", confirm: "" });
+        setPwdTouched(false);
+        setError("Пароль изменён. Войдите снова с новым паролем.");
+        setMode("login");
+        logout();
+        return;
       }
       setProfile(updated);
       setShowEditProfile(false);
@@ -10707,15 +10755,13 @@ function App() {
             />
 
             <div className="panel-header--sub" style={{ marginTop: "10px" }}>Сменить пароль</div>
-            <input
+            <HoldToRevealPassword
               placeholder="Текущий пароль"
-              type="password"
               value={pwdForm.current}
               onChange={(e) => setPwdForm((p) => ({ ...p, current: e.target.value }))}
             />
-            <input
+            <HoldToRevealPassword
               placeholder="Новый пароль"
-              type="password"
               value={pwdForm.next}
               onChange={(e) => { setPwdTouched(true); setPwdForm((p) => ({ ...p, next: e.target.value })); }}
               style={{
@@ -10724,9 +10770,8 @@ function App() {
                   : undefined
               }}
             />
-            <input
+            <HoldToRevealPassword
               placeholder="Повторите новый пароль"
-              type="password"
               value={pwdForm.confirm}
               onChange={(e) => { setPwdTouched(true); setPwdForm((p) => ({ ...p, confirm: e.target.value })); }}
               style={{

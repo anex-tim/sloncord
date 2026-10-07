@@ -3884,6 +3884,38 @@ video.msg-attachment__video-el::-webkit-media-controls-fullscreen-button {
   word-wrap: break-word;
 }
 
+.pwd-field {
+  position: relative;
+  width: 100%;
+}
+
+.pwd-field input {
+  padding-right: 44px;
+}
+
+.pwd-eye {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  width: 32px;
+  height: 32px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted, #b5bac1);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pwd-eye:hover {
+  color: #fff;
+  background: transparent;
+}
+
 .auth-card input, .auth-card textarea {
   width: 100%;
   max-width: 100%;

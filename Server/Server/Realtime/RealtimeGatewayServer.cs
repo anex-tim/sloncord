@@ -76,7 +76,7 @@ internal sealed class RealtimeGatewayServer
                     var op = opEl.GetString() ?? "";
                     if (string.Equals(op, "ping", StringComparison.OrdinalIgnoreCase))
                     {
-                        await SendJsonAsync(socket, new { op = "pong" }, ct);
+                        await _hub.SendJsonAsync(socket, new { op = "pong" }, ct);
                     }
                     else if (string.Equals(op, "resyncGroups", StringComparison.OrdinalIgnoreCase))
                     {
@@ -131,7 +131,7 @@ internal sealed class RealtimeGatewayServer
             groups.Add(SloncordHub.GroupPlatformModerators);
 
         _hub.SetGroups(socket, groups);
-        await SendJsonAsync(socket, new { op = "ready", userId = userId.ToString("D") }, ct);
+        await _hub.SendJsonAsync(socket, new { op = "ready", userId = userId.ToString("D") }, ct);
         return channelIds;
     }
 
@@ -183,10 +183,4 @@ internal sealed class RealtimeGatewayServer
         });
     }
 
-    private static Task SendJsonAsync(WebSocket socket, object payload, CancellationToken ct)
-    {
-        var json = JsonSerializer.Serialize(payload, SloncordJson.Options);
-        var bytes = Encoding.UTF8.GetBytes(json);
-        return socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, ct);
-    }
 }

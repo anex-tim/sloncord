@@ -122,7 +122,7 @@ function installApiCertificateTrust(): void {
       callback(0);
       return;
     }
-    callback(-2);
+    callback(-3);
   });
 }
 

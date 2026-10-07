@@ -29,6 +29,7 @@ class SloncordHubConnection {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
   private closed = false;
+  private connectGeneration = 0;
   private connState: HubConnectionState = HubConnectionState.Disconnected;
   private readonly handlers = new Map<string, Handler>();
   private onReconnectingCb: Handler | null = null;
@@ -101,7 +102,9 @@ class SloncordHubConnection {
     const waitMs = Math.min(30000, 500 + this.reconnectAttempt * 800);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      void this.connectInternal(true);
+      void this.connectInternal(true).catch(() => {
+        /* onclose already schedules the next attempt */
+      });
     }, waitMs);
   }
 
@@ -110,10 +113,20 @@ class SloncordHubConnection {
     this.setConnState(HubConnectionState.Connecting);
     this.gotReadyAfterConnect = false;
     const url = buildBackendWsUrl("/ws/realtime", this.token);
+    const generation = ++this.connectGeneration;
 
     await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (err) reject(err);
+        else resolve();
+      };
+      const previous = this.ws;
+      this.ws = null;
       try {
-        this.ws?.close();
+        previous?.close();
       } catch {
         /* ignore */
       }
@@ -121,16 +134,21 @@ class SloncordHubConnection {
       this.ws = ws;
 
       ws.onopen = () => {
+        if (generation !== this.connectGeneration) return;
         this.startPing();
         this.setConnState(HubConnectionState.Connected);
         this.reconnectAttempt = 0;
-        resolve();
+        finish();
       };
 
-      ws.onerror = () => reject(new Error("realtime_ws_error"));
+      // onerror is always followed by onclose. A raw code here became an unhandled
+      // rejection on every reconnect and looked like a user-facing error.
+      ws.onerror = () => {};
 
       ws.onclose = () => {
+        if (this.ws !== ws) return;
         this.stopPing();
+        if (!settled) finish(new Error("realtime_disconnected"));
         if (this.closed) {
           this.setConnState(HubConnectionState.Disconnected);
           try {

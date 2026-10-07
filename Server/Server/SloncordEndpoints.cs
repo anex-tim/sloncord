@@ -196,19 +196,21 @@ internal static class SloncordEndpoints
             if (u is null) return Results.Unauthorized();
 
             if (string.IsNullOrWhiteSpace(req.CurrentPassword) || string.IsNullOrWhiteSpace(req.NewPassword))
-                return Results.BadRequest(new { error = "currentPassword и newPassword обязательны" });
+                return Results.BadRequest(new { error = "Укажите текущий и новый пароль." });
 
             if (req.NewPassword.Length < 6)
                 return Results.BadRequest(new { error = "Минимальная длина пароля - 6 символов" });
 
             if (!PasswordHasher.Verify(req.CurrentPassword, u.Salt, u.PasswordHash))
-                return Results.Unauthorized();
+                return Results.BadRequest(new { error = "Текущий пароль указан неверно." });
 
-            // rotate salt
             u.Salt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
             u.PasswordHash = PasswordHasher.Hash(req.NewPassword, u.Salt);
+            var sessions = await db.Sessions.Where(x => x.UserId == u.Id).ToListAsync();
+            db.Sessions.RemoveRange(sessions);
             SloncordUserActivity.Add(db, u.Id, "user.password.change", "", SloncordClientIp.Resolve(ctx));
             await db.SaveChangesAsync();
+            await SloncordSessions.NotifyPasswordChangedAsync(s, userId.Value);
             return Results.Ok(new { ok = true });
         });
     }

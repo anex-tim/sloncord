@@ -267,11 +267,11 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     const b = bridge();
     // Источник выбирает Electron в setDisplayMediaRequestHandler.
     // chromeMediaSource/mandatory в getDisplayMedia даёт "exact constraints are not supported".
-    // Системный звук берёт WASAPI helper. audio:true в Chromium включает весь микс, включая Sloncord,
-    // и на части сборок Windows остановка этой дорожки гасит и видео.
+    // audio:true только чтобы в окне выбора была галочка звука.
+    // Сам Chromium получает лишь видео: системный звук, если галочка включена, берёт WASAPI.
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
-      audio: false,
+      audio: true,
     });
     const videoTrack = stream.getVideoTracks?.()?.[0];
     if (!videoTrack) {

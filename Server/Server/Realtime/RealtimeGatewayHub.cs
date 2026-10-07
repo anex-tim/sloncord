@@ -38,14 +38,13 @@ internal sealed class RealtimeGatewayHub
     {
         var json = JsonSerializer.Serialize(new { op = "event", name = eventName, payload }, SloncordJson.Options);
         var bytes = Encoding.UTF8.GetBytes(json);
-        var segment = new ArraySegment<byte>(bytes);
 
         var tasks = new List<Task>();
         foreach (var (socket, client) in _clients)
         {
             if (!client.Groups.Contains(group)) continue;
             if (socket.State != WebSocketState.Open) continue;
-            tasks.Add(SendSafeAsync(socket, segment, ct));
+            tasks.Add(SendLockedAsync(client, socket, bytes, ct));
         }
 
         return tasks.Count == 0 ? Task.CompletedTask : Task.WhenAll(tasks);
@@ -64,26 +63,47 @@ internal sealed class RealtimeGatewayHub
     {
         var json = JsonSerializer.Serialize(new { op = "event", name = eventName, payload }, SloncordJson.Options);
         var bytes = Encoding.UTF8.GetBytes(json);
-        var segment = new ArraySegment<byte>(bytes);
         var tasks = new List<Task>();
-        foreach (var (socket, _) in _clients)
+        foreach (var (socket, client) in _clients)
         {
             if (socket.State != WebSocketState.Open) continue;
-            tasks.Add(SendSafeAsync(socket, segment, ct));
+            tasks.Add(SendLockedAsync(client, socket, bytes, ct));
         }
 
         return tasks.Count == 0 ? Task.CompletedTask : Task.WhenAll(tasks);
     }
 
-    private static async Task SendSafeAsync(WebSocket socket, ArraySegment<byte> segment, CancellationToken ct)
+    public Task SendJsonAsync(WebSocket socket, object payload, CancellationToken ct = default)
+    {
+        if (!_clients.TryGetValue(socket, out var client)) return Task.CompletedTask;
+        var json = JsonSerializer.Serialize(payload, SloncordJson.Options);
+        var bytes = Encoding.UTF8.GetBytes(json);
+        return SendLockedAsync(client, socket, bytes, ct);
+    }
+
+    private static async Task SendLockedAsync(RealtimeClient client, WebSocket socket, byte[] bytes, CancellationToken ct)
     {
         try
         {
-            await socket.SendAsync(segment, WebSocketMessageType.Text, endOfMessage: true, ct);
+            await client.SendLock.WaitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        try
+        {
+            if (socket.State != WebSocketState.Open) return;
+            await socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, ct);
         }
         catch
         {
             // ignore
+        }
+        finally
+        {
+            client.SendLock.Release();
         }
     }
 
@@ -91,5 +111,6 @@ internal sealed class RealtimeGatewayHub
     {
         public Guid UserId { get; } = userId;
         public HashSet<string> Groups { get; } = groups;
+        public SemaphoreSlim SendLock { get; } = new(1, 1);
     }
 }
