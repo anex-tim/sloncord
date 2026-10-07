@@ -2676,7 +2676,7 @@ internal static class SloncordEndpoints
             if (!await IsMemberAsync(db, channelId, me.Value))
                 return Results.Forbid();
 
-            var join = nativeSvc.CreateJoin(me.Value, req.RoomId.Trim());
+            var join = nativeSvc.CreateJoin(me.Value, "channel:" + channelId.ToString("D"));
             var udpHost = join.UdpHost;
             if (string.IsNullOrWhiteSpace(udpHost)
                 || udpHost is "127.0.0.1" or "localhost" or "::1")

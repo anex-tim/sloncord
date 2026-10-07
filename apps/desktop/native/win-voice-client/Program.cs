@@ -495,7 +495,7 @@ internal sealed class VoiceRuntime
             }
             if (kind == VoiceProtocol.KindScreenAudio)
             {
-                if (Deafened || _watchScreenSession == 0 || sessionId != _watchScreenSession || _screenDecoder is null || _playBuffer is null)
+                if (Deafened || _watchScreenSession == 0 || _screenDecoder is null || _playBuffer is null)
                     continue;
                 var screenPcm = new short[960 * 6];
                 var screenDecoded = _screenDecoder.Decode(payload, 0, payload.Length, screenPcm, 0, screenPcm.Length, false);

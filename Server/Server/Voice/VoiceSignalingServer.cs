@@ -13,13 +13,13 @@ namespace Sloncord;
 internal sealed class VoiceSignalingServer
 {
     private readonly object _sync = new();
-    private readonly Dictionary<string, Dictionary<Guid, HashSet<WebSocket>>> _rooms = new();
-    private readonly Dictionary<string, HashSet<Guid>> _roomScreenSharers = new();
-    private readonly Dictionary<string, Dictionary<Guid, DateTime>> _roomScreenSharersTouchedAtUtc = new();
-    private readonly Dictionary<string, Dictionary<Guid, (bool Muted, bool Deafened)>> _roomUserFlags = new();
-    private readonly Dictionary<string, Dictionary<Guid, DateTime>> _roomSpeakingTouchedAtUtc = new();
+    private readonly Dictionary<string, Dictionary<Guid, HashSet<WebSocket>>> _rooms = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, HashSet<Guid>> _roomScreenSharers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Dictionary<Guid, DateTime>> _roomScreenSharersTouchedAtUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Dictionary<Guid, (bool Muted, bool Deafened)>> _roomUserFlags = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Dictionary<Guid, DateTime>> _roomSpeakingTouchedAtUtc = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan SpeakingPresenceTtl = TimeSpan.FromSeconds(1.5);
-    private readonly Dictionary<string, DateTime> _roomStartedAtUtc = new();
+    private readonly Dictionary<string, DateTime> _roomStartedAtUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<WebSocket, (Guid UserId, string RoomId)> _socketMap = new();
     private readonly Dictionary<WebSocket, string> _socketMode = new();
     private readonly ConcurrentDictionary<WebSocket, SemaphoreSlim> _sendLocks = new();
@@ -143,7 +143,7 @@ internal sealed class VoiceSignalingServer
                 using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 // Дольше двух пропущенных ping (клиент шлёт каждые 2 с). Убитый процесс
                 // не шлёт ping, даже если TCP ещё держит прокси.
-                idle.CancelAfter(TimeSpan.FromSeconds(5));
+                idle.CancelAfter(TimeSpan.FromSeconds(12));
                 System.Net.WebSockets.ValueWebSocketReceiveResult result;
                 try
                 {
@@ -212,28 +212,28 @@ internal sealed class VoiceSignalingServer
                     {
                         if (string.IsNullOrWhiteSpace(msg.RoomId)) continue;
                         if (msg.Enabled is null) continue;
-                        UpdateScreenShare(userId, msg.RoomId, msg.Enabled.Value, ct);
+                        UpdateScreenShare(userId, CanonicalRoomId(msg.RoomId), msg.Enabled.Value, ct);
                     }
                     else if (msg.Type == "screenFrame")
                     {
                         if (string.IsNullOrWhiteSpace(msg.RoomId) || string.IsNullOrWhiteSpace(msg.Payload)) continue;
-                        if (msg.Payload.Length > 160_000) continue;
+                        if (msg.Payload.Length > 600_000) continue;
                         // Не блокировать приём ping/флагов большой JPEG-рассылкой.
                         if (System.Threading.Interlocked.CompareExchange(ref _screenFrameRelays, 1, 0) != 0) continue;
-                        _ = RelayScreenFrameAsync(userId, msg.RoomId, msg.Payload, socket, CancellationToken.None)
+                        _ = RelayScreenFrameAsync(userId, CanonicalRoomId(msg.RoomId), msg.Payload, socket, CancellationToken.None)
                             .ContinueWith(_ => System.Threading.Interlocked.Exchange(ref _screenFrameRelays, 0));
                     }
                     else if (msg.Type == "setUserFlags")
                     {
                         if (string.IsNullOrWhiteSpace(msg.RoomId)) continue;
                         if (msg.Muted is null && msg.Deafened is null) continue;
-                        UpdateUserFlags(userId, msg.RoomId, msg.Muted, msg.Deafened, ct);
+                        UpdateUserFlags(userId, CanonicalRoomId(msg.RoomId), msg.Muted, msg.Deafened, ct);
                     }
                     else if (msg.Type == "setSpeaking")
                     {
                         if (string.IsNullOrWhiteSpace(msg.RoomId)) continue;
                         if (msg.Speaking is null) continue;
-                        UpdateSpeaking(userId, msg.RoomId, msg.Speaking.Value, ct);
+                        UpdateSpeaking(userId, CanonicalRoomId(msg.RoomId), msg.Speaking.Value, ct);
                     }
                     else if (msg.Type == "sfu")
                     {
@@ -297,8 +297,16 @@ internal sealed class VoiceSignalingServer
         }
     }
 
+    private static string CanonicalRoomId(string roomId)
+    {
+        if (TryParseChannelRoom(roomId, out var channelId))
+            return "channel:" + channelId.ToString("D");
+        return roomId.Trim();
+    }
+
     private async Task JoinRoomAsync(Guid userId, string roomId, WebSocket socket, string? mode, CancellationToken ct)
     {
+        roomId = CanonicalRoomId(roomId);
         List<Guid> existingPeerIds = new();
         List<(WebSocket Socket, string RoomId)> toClose = new();
         HashSet<string> affectedRooms = new(StringComparer.OrdinalIgnoreCase);
@@ -641,6 +649,7 @@ internal sealed class VoiceSignalingServer
                 }
             }
         }
+        _ = BroadcastRosterAsync(roomId, ct);
         _ = BroadcastVoicePresenceAsync(roomId, ct);
     }
 

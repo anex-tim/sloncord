@@ -38,9 +38,10 @@ export function VoiceChannelSidebarItem({
   channelMenuOpenForId,
 }) {
   const channelId = String(channel.id);
+  const channelKey = channelId.toLowerCase();
   const isConnectedHere =
-    String(activeVoiceChannelId) === channelId && (voiceConnected || voiceJoining);
-  const presence = voicePresenceByChannelId[channelId];
+    String(activeVoiceChannelId || "").toLowerCase() === channelKey && (voiceConnected || voiceJoining);
+  const presence = voicePresenceByChannelId[channelId] || voicePresenceByChannelId[channelKey] || null;
   const meId = String(profile?.id || "");
   const timerVisible = voiceChannelTimerVisible(presence, profile?.id, isConnectedHere);
   const [timerTick, setTimerTick] = useState(() => Date.now());
@@ -52,7 +53,7 @@ export function VoiceChannelSidebarItem({
   }, [timerVisible, presence?.startedAtUtc]);
   const presenceIds = (presence?.userIds || [])
     .map((x) => String(x))
-    .filter((id) => id && id !== meId);
+    .filter((id) => id && id.toLowerCase() !== meId.toLowerCase());
   const presenceSharers = new Set(
     (presence?.screenShareUserIds || []).map((x) => String(x)).filter((id) => id && id !== meId)
   );
@@ -61,9 +62,18 @@ export function VoiceChannelSidebarItem({
 
   let roster = null;
   if (isConnectedHere) {
-    const rosterRaw = Array.isArray(presence?.userIds)
-      ? presence.userIds.map((x) => String(x)).filter(Boolean)
-      : (voiceState.rosterUserIds || []).map((x) => String(x)).filter(Boolean);
+    const seen = new Set();
+    const rosterRaw = [];
+    for (const list of [presence?.userIds, isConnectedHere ? voiceState.rosterUserIds : null]) {
+      for (const x of list || []) {
+        const id = String(x || "").trim();
+        if (!id) continue;
+        const k = id.toLowerCase();
+        if (seen.has(k) || k === meId.toLowerCase()) continue;
+        seen.add(k);
+        rosterRaw.push(id);
+      }
+    }
     const sharers = new Set(
       (Array.isArray(presence?.screenShareUserIds)
         ? presence.screenShareUserIds
@@ -90,7 +100,6 @@ export function VoiceChannelSidebarItem({
           {voiceState.deafened && <span className="voice-flag" title="Наушники выключены"><SlonIcon name="headphones-off" size={14} /></span>}
         </li>
         {(rosterRaw || [])
-          .filter((id) => String(id) !== meId)
           .map((id) => {
             const sid = String(id);
             const isSp = isUserSpeakingInVoice(sid, channelId);

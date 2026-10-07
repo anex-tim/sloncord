@@ -38,6 +38,7 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
 
   function send(obj: Record<string, unknown>) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (obj.type === "screenFrame" && ws.bufferedAmount > 1_500_000) return;
     try {
       ws.send(JSON.stringify(obj));
     } catch {

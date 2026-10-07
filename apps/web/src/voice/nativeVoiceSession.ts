@@ -1,6 +1,7 @@
 import { getApiBase } from "../config/apiBase";
 import { createNativePresenceClient } from "./nativePresenceClient";
 import { deriveNativeSessionId } from "./nativeSessionId";
+import { applyDisplayCaptureProfileToTrack } from "./screenShare";
 import { createVoiceSessionState } from "./voiceSessionState";
 
 function resolveNativeUdpHost(host: string): string {
@@ -51,6 +52,7 @@ type SloncordNativeVoiceBridge = {
   onNativeRemoteVideo?: (cb: (detail: { sessionId: number; jpegBase64: string }) => void) => () => void;
   onNativeVoiceError?: (cb: (msg: string) => void) => () => void;
   takeDisplaySelection?: () => Promise<{ tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null>;
+  takeDisplayCaptureProfile?: () => Promise<{ maxHeight: number; frameRate: number } | null>;
   setDisplayCaptureLive?: (live: boolean) => Promise<{ ok: boolean }>;
   startNativeScreenAudio?: (
     selection?: { tab: "screen" | "window"; sourceId: string; withSystemAudio: boolean } | null
@@ -156,19 +158,9 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
   async function setWatchScreen(userId: string) {
     const id = String(userId || "");
     watchedScreenUserId = id;
-    if (!id) {
-      void bridge()?.setNativeVoiceWatchScreen?.(0);
-      return;
-    }
-    try {
-      const fromServer = serverSessionByUser.get(id.toLowerCase());
-      const sid = fromServer && fromServer > 0
-        ? fromServer
-        : await deriveNativeSessionId(id, opts.roomId);
-      void bridge()?.setNativeVoiceWatchScreen?.(sid);
-    } catch {
-      /* ignore */
-    }
+    // Любой ненулевой id включает звук демонстрации. Сравнение session id
+    // раньше глушило дорожку, даже когда кадры уже шли.
+    void bridge()?.setNativeVoiceWatchScreen?.(id ? 1 : 0);
   }
 
   const presence = createNativePresenceClient({
@@ -348,12 +340,12 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     screenStream = null;
     screenVideoEl = null;
     screenCanvas = null;
+    if (wasSharing) publishScreenFlag(false);
     try {
       await bridge()?.setDisplayCaptureLive?.(false);
     } catch {
       /* ignore */
     }
-    if (wasSharing) publishScreenFlag(false);
   }
 
   async function startScreenShareInternal() {
@@ -386,6 +378,23 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     }
     screenStream = stream;
     screenSharing = true;
+    let capProfile: { maxHeight: number; frameRate: number } | null = null;
+    try {
+      capProfile = (await b?.takeDisplayCaptureProfile?.()) ?? null;
+    } catch {
+      capProfile = null;
+    }
+    const maxHeight = Math.max(360, Math.min(1440, Number(capProfile?.maxHeight) || 720));
+    const fps = Math.max(5, Math.min(60, Number(capProfile?.frameRate) || 30));
+    try {
+      await applyDisplayCaptureProfileToTrack(videoTrack, {
+        maxWidth: Math.round(maxHeight * 16 / 9),
+        maxHeight,
+        frameRate: fps,
+      });
+    } catch {
+      /* ignore */
+    }
     screenVideoEl = document.createElement("video");
     screenVideoEl.muted = true;
     screenVideoEl.playsInline = true;
@@ -403,10 +412,12 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       }).catch(() => {});
     }
 
+    const frameMs = Math.max(16, Math.round(1000 / fps));
+    const byteBudget = maxHeight >= 1440 ? 520000 : maxHeight >= 1080 ? 380000 : maxHeight >= 720 ? 240000 : 140000;
     let frameBusy = false;
-    let jpegQuality = 0.5;
+    let jpegQuality = maxHeight >= 1440 ? 0.52 : maxHeight >= 1080 ? 0.6 : 0.72;
     screenCaptureTimer = setInterval(() => {
-      if (frameBusy || !screenSharing || !screenVideoEl || !screenCanvas || !b?.sendNativeVideoFrame) return;
+      if (frameBusy || !screenSharing || !screenVideoEl || !screenCanvas) return;
       const track = screenStream?.getVideoTracks?.()?.[0];
       if (!track || track.readyState !== "live") {
         void stopScreenShareInternal();
@@ -415,28 +426,28 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       const vw = screenVideoEl.videoWidth;
       const vh = screenVideoEl.videoHeight;
       if (vw < 2 || vh < 2) return;
-      const scale = Math.min(1, 960 / vw);
+      const scale = vh > maxHeight ? maxHeight / vh : 1;
       const w = Math.max(2, Math.round(vw * scale));
       const h = Math.max(2, Math.round(vh * scale));
       if (screenCanvas.width !== w) screenCanvas.width = w;
       if (screenCanvas.height !== h) screenCanvas.height = h;
-      const ctx = screenCanvas.getContext("2d");
+      const ctx = screenCanvas.getContext("2d", { alpha: false });
       if (!ctx) return;
+      ctx.imageSmoothingEnabled = scale < 0.999;
+      ctx.imageSmoothingQuality = "high";
       ctx.drawImage(screenVideoEl, 0, 0, w, h);
       let dataUrl = screenCanvas.toDataURL("image/jpeg", jpegQuality);
       let b64 = dataUrl.split(",")[1] || "";
-      if (b64.length > 160000 && jpegQuality > 0.35) {
-        jpegQuality = Math.max(0.35, jpegQuality - 0.08);
+      if (b64.length > byteBudget && jpegQuality > 0.42) {
+        jpegQuality = Math.max(0.42, jpegQuality - 0.06);
         dataUrl = screenCanvas.toDataURL("image/jpeg", jpegQuality);
         b64 = dataUrl.split(",")[1] || "";
       }
-      if (!b64 || b64.length > 150000) return;
-      sendPresence({ type: "screenFrame", roomId: opts.roomId, payload: b64 });
+      if (!b64 || b64.length > 600000) return;
       frameBusy = true;
-      void Promise.resolve(b.sendNativeVideoFrame(b64)).finally(() => {
-        frameBusy = false;
-      });
-    }, 220);
+      sendPresence({ type: "screenFrame", roomId: opts.roomId, payload: b64 });
+      frameBusy = false;
+    }, frameMs);
   }
 
   return {
