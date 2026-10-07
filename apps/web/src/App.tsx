@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { createPortal, flushSync } from "react-dom";
 import * as signalR from "./realtime/sloncordRealtimeShim";
 import { buildBackendWsUrl, getApiBase } from "./config/apiBase";
-import { fetchDesktopReleaseFromGithub } from "./config/desktopGithubRelease";
+import { fetchDesktopReleaseFromGithub, pickNewestDesktopRelease } from "./config/desktopGithubRelease";
 import {
   buildServerInviteUrl,
   captureInviteFromCurrentUrl,
@@ -69,6 +69,19 @@ function dispatchDesktopReleaseCheckIfDesktop(): void {
   } catch {
     /* ignore */
   }
+}
+
+function isNewerDesktopVersion(remote, local) {
+  const pa = String(remote || "").replace(/^v/i, "").split(".").map((x) => parseInt(x, 10));
+  const pb = String(local || "").replace(/^v/i, "").split(".").map((x) => parseInt(x, 10));
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i += 1) {
+    const a = Number.isFinite(pa[i]) ? pa[i] : 0;
+    const b = Number.isFinite(pb[i]) ? pb[i] : 0;
+    if (a > b) return true;
+    if (a < b) return false;
+  }
+  return false;
 }
 
 function fileKindByName(name) {
@@ -1124,6 +1137,98 @@ function App() {
     loginStartHidden: false,
   });
   const [desktopHotkeyField, setDesktopHotkeyField] = useState(null);
+  const [desktopUpdateCheck, setDesktopUpdateCheck] = useState({
+    busy: false,
+    text: "",
+    downloadUrl: "",
+    remoteVersion: "",
+  });
+
+  async function checkDesktopUpdatesNow() {
+    if (desktopUpdateCheck.busy) return;
+    setDesktopUpdateCheck({ busy: true, text: "Проверяем GitHub…", downloadUrl: "", remoteVersion: "" });
+    dispatchDesktopReleaseCheckIfDesktop();
+    const ac = new AbortController();
+    const timer = window.setTimeout(() => {
+      try { ac.abort(); } catch { /* ignore */ }
+    }, 15000);
+    try {
+      const local = String(await window.sloncord?.getAppVersion?.() || "").trim();
+      const candidates = [];
+      if (typeof window.sloncord?.fetchDesktopReleaseFromMain === "function") {
+        try {
+          const fromMain = await window.sloncord.fetchDesktopReleaseFromMain();
+          if (fromMain?.version && fromMain?.downloadUrl) candidates.push(fromMain);
+        } catch { /* ignore */ }
+      }
+      try {
+        const fromRenderer = await fetchDesktopReleaseFromGithub(ac.signal);
+        if (fromRenderer?.version && fromRenderer?.downloadUrl) candidates.push(fromRenderer);
+      } catch { /* ignore */ }
+      const best = pickNewestDesktopRelease(candidates);
+      const remote = String(best?.version || "").trim();
+      const url = String(best?.downloadUrl || "").trim();
+      if (!remote || !url) {
+        setDesktopUpdateCheck({
+          busy: false,
+          text: "Не удалось связаться с GitHub. Попробуйте ещё раз.",
+          downloadUrl: "",
+          remoteVersion: "",
+        });
+        return;
+      }
+      if (local && isNewerDesktopVersion(remote, local)) {
+        setDesktopUpdateCheck({
+          busy: false,
+          text: `Доступна версия ${remote}. Сейчас установлена ${local}.`,
+          downloadUrl: url,
+          remoteVersion: remote,
+        });
+        return;
+      }
+      setDesktopUpdateCheck({
+        busy: false,
+        text: local ? `Установлена последняя версия (${local}).` : "Установлена последняя версия.",
+        downloadUrl: "",
+        remoteVersion: remote,
+      });
+    } catch {
+      setDesktopUpdateCheck({
+        busy: false,
+        text: "Не удалось проверить обновления. Попробуйте ещё раз.",
+        downloadUrl: "",
+        remoteVersion: "",
+      });
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
+  async function installDesktopUpdateFromSettings() {
+    const url = String(desktopUpdateCheck.downloadUrl || "");
+    if (!url || desktopUpdateCheck.busy || typeof window.sloncord?.installDesktopUpdate !== "function") return;
+    setDesktopUpdateCheck((prev) => ({ ...prev, busy: true, text: "Скачиваем обновление…" }));
+    try {
+      let next = url;
+      try {
+        const u = new URL(url);
+        if (desktopUpdateCheck.remoteVersion) u.searchParams.set("v", desktopUpdateCheck.remoteVersion);
+        next = u.href;
+      } catch { /* ignore */ }
+      const r = await window.sloncord.installDesktopUpdate(next);
+      if (!r?.ok && r?.error) {
+        setDesktopUpdateCheck((prev) => ({ ...prev, busy: false, text: String(r.error) }));
+        return;
+      }
+      setDesktopUpdateCheck((prev) => ({ ...prev, busy: false, text: "Обновление запускается…" }));
+    } catch (e) {
+      setDesktopUpdateCheck((prev) => ({
+        ...prev,
+        busy: false,
+        text: String(e?.message || e || "Не удалось установить обновление."),
+      }));
+    }
+  }
 
   const [desktopDownloadInfo, setDesktopDownloadInfo] = useState(null);
   const apiBaseForDl = getApiBase();
@@ -8398,6 +8503,33 @@ function App() {
                         <span>Открывать в свёрнутом состоянии</span>
                       </label>
                     )}
+                    <div className="panel-header--sub" style={{ marginTop: "18px" }}>Обновления</div>
+                    <div className="muted" style={{ marginTop: "6px", lineHeight: 1.45 }}>
+                      Релиз на GitHub проверяется сразу, без ожидания фоновой проверки.
+                    </div>
+                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px" }}>
+                      <button
+                        type="button"
+                        className="small-btn"
+                        disabled={desktopUpdateCheck.busy}
+                        onClick={() => { void checkDesktopUpdatesNow(); }}
+                      >
+                        {desktopUpdateCheck.busy && !desktopUpdateCheck.downloadUrl ? "Проверка…" : "Проверить обновления"}
+                      </button>
+                      {desktopUpdateCheck.downloadUrl ? (
+                        <button
+                          type="button"
+                          className="small-btn"
+                          disabled={desktopUpdateCheck.busy}
+                          onClick={() => { void installDesktopUpdateFromSettings(); }}
+                        >
+                          {desktopUpdateCheck.busy ? "Установка…" : `Установить ${desktopUpdateCheck.remoteVersion}`}
+                        </button>
+                      ) : null}
+                    </div>
+                    {desktopUpdateCheck.text ? (
+                      <div className="muted" style={{ marginTop: "8px", lineHeight: 1.45 }}>{desktopUpdateCheck.text}</div>
+                    ) : null}
                   </>
                 )}
               </div>
