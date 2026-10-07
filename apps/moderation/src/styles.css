@@ -1300,21 +1300,43 @@ html.electron #root {
 
 .user-activity-table {
   width: 100%;
-  min-width: 0;
+  min-width: 100%;
   font-size: 12px;
+}
+
+.user-activity-table {
   table-layout: fixed;
+  width: 100%;
+  min-width: 100%;
 }
 
 .user-activity-table th,
 .user-activity-table td {
   padding: 6px 8px;
   vertical-align: top;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+  word-break: break-word;
 }
 
 .user-activity-table tbody tr {
+  cursor: pointer;
+}
+
+.user-activity-table__full td {
   cursor: default;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.user-activity-full__action {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.user-activity-full__details {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .user-activity-table tbody tr:hover {
@@ -1323,7 +1345,6 @@ html.electron #root {
 
 .user-activity-table__time {
   white-space: nowrap;
-  width: 30%;
 }
 
 .user-activity-table__details {

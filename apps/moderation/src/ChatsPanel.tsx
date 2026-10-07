@@ -36,6 +36,7 @@ export function ChatsPanel({ me, onError, onStatus }: Props) {
   const [selectedServerId, setSelectedServerId] = useState("");
   const [selectedChannelId, setSelectedChannelId] = useState("");
   const [selectedChannel, setSelectedChannel] = useState<PlatformChannel | null>(null);
+  const [feedScope, setFeedScope] = useState<"" | "channels" | "dms">("");
   const [messages, setMessages] = useState<PlatformMessageHit[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -96,18 +97,71 @@ export function ChatsPanel({ me, onError, onStatus }: Props) {
   }, [selectedServerId, channelFilter, loadChannels, onError]);
 
   useEffect(() => {
+    if (selectedServerId && feedScope === "dms") setFeedScope("channels");
+  }, [selectedServerId, feedScope]);
+
+  useEffect(() => {
+    if (feedScope) {
+      void loadTimelinePage(feedScope, selectedServerId, 1, pageSize, messageSort);
+      return;
+    }
     if (!selectedChannelId) return;
     void loadMessagesPage(selectedChannelId, 1, pageSize, messageSort);
-  }, [selectedChannelId, pageSize, messageSort, loadMessagesPage]);
+  }, [feedScope, selectedServerId, selectedChannelId, pageSize, messageSort, loadMessagesPage, loadTimelinePage]);
+
+  const loadTimelinePage = useCallback(
+    async (scope: "channels" | "dms", serverId: string, nextPage: number, size: number, sort: MessageSort) => {
+      setLoading(true);
+      try {
+        const skip = (nextPage - 1) * size;
+        const params = new URLSearchParams({
+          scope: scope === "dms" ? "dms" : "channels",
+          limit: String(size),
+          skip: String(skip),
+          sort,
+        });
+        if (scope === "channels" && serverId) params.set("serverId", serverId);
+        const res = await api<{
+          messages: PlatformMessageHit[];
+          total: number;
+          page?: number;
+        }>(`/platform/messages/timeline?${params}`);
+        setMessages(res.messages || []);
+        setTotal(res.total ?? 0);
+        setPage(res.page ?? nextPage);
+        requestAnimationFrame(() => {
+          listRef.current?.scrollTo({ top: 0 });
+        });
+      } catch (e) {
+        onError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [onError]
+  );
 
   const openChannel = (ch: PlatformChannel) => {
+    setFeedScope("");
     setSelectedChannelId(ch.id);
     setSelectedChannel(ch);
     setPage(1);
   };
 
+  const openFeed = (scope: "channels" | "dms") => {
+    setFeedScope(scope);
+    setSelectedChannelId("");
+    setSelectedChannel(null);
+    setPage(1);
+  };
+
   const goToPage = (nextPage: number) => {
-    if (!selectedChannelId || nextPage < 1 || nextPage > totalPages || loading) return;
+    if (nextPage < 1 || nextPage > totalPages || loading) return;
+    if (feedScope) {
+      void loadTimelinePage(feedScope, selectedServerId, nextPage, pageSize, messageSort);
+      return;
+    }
+    if (!selectedChannelId) return;
     void loadMessagesPage(selectedChannelId, nextPage, pageSize, messageSort);
   };
 
@@ -162,6 +216,22 @@ export function ChatsPanel({ me, onError, onStatus }: Props) {
             onChange={(e) => setChannelFilter(e.target.value)}
           />
           <div className="chats-list chats-list--channels">
+            <button
+              type="button"
+              className={feedScope === "channels" ? "chats-pick active" : "chats-pick"}
+              onClick={() => openFeed("channels")}
+            >
+              Все каналы
+            </button>
+            {!selectedServerId && hasPerm(me, "viewDms") ? (
+              <button
+                type="button"
+                className={feedScope === "dms" ? "chats-pick active" : "chats-pick"}
+                onClick={() => openFeed("dms")}
+              >
+                Все DM
+              </button>
+            ) : null}
             {channels.map((ch) => (
               <button
                 key={ch.id}
@@ -176,14 +246,24 @@ export function ChatsPanel({ me, onError, onStatus }: Props) {
         </aside>
 
         <div className="chats-main">
-          {selectedChannel ? (
+          {selectedChannel || feedScope ? (
             <>
               <div className="chats-main-head">
                 <div>
                   <strong>
-                    {formatChannelLabel(selectedChannel)}
+                    {feedScope === "dms"
+                      ? "Все личные сообщения"
+                      : feedScope === "channels"
+                        ? (selectedServerId
+                          ? `Все каналы · ${servers.find((s) => s.id === selectedServerId)?.name || "сервер"}`
+                          : "Все каналы")
+                        : formatChannelLabel(selectedChannel!)}
                   </strong>
-                  <div className="muted small">{selectedChannel.id}</div>
+                  {!feedScope && selectedChannel ? (
+                    <div className="muted small">{selectedChannel.id}</div>
+                  ) : (
+                    <div className="muted small">По времени отправки</div>
+                  )}
                 </div>
                 <div className="chats-head-controls">
                   <label className="pager-size">
@@ -222,6 +302,7 @@ export function ChatsPanel({ me, onError, onStatus }: Props) {
                   <div key={m.id} className={`msg chat-msg${m.isDeleted ? " deleted" : ""}`}>
                     <div className="msg-meta">
                       <strong>{m.senderNickname}</strong>
+                      {feedScope ? <span className="muted">{formatChannelLabel(m)}</span> : null}
                       <span className="muted">{fmtDate(m.createdAtUtc)}</span>
                       {!m.isDeleted && hasPerm(me, "deleteMessages") && canModerateMessage(me, m) ? (
                         <button type="button" className="ghost tiny" onClick={() => void deleteMessage(m.id)}>

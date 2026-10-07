@@ -1,9 +1,9 @@
 {
-  "version": "1.3.2",
+  "version": "1.3.3",
   "available": true,
   "fileName": "Sloncord-Moderation-Setup-x64.exe",
-  "downloadUrl": "https://github.com/anex-tim/sloncord-moderation/releases/download/v1.3.2/Sloncord-Moderation-Setup-x64.exe",
-  "size": 75624949,
-  "releasedAt": "2026-10-07T00:11:44.783Z",
+  "downloadUrl": "https://github.com/anex-tim/sloncord-moderation/releases/download/v1.3.3/Sloncord-Moderation-Setup-x64.exe",
+  "size": 75625782,
+  "releasedAt": "2026-10-07T00:17:02.111Z",
   "githubRepo": "anex-tim/sloncord-moderation"
 }

@@ -943,6 +943,75 @@ internal static class SloncordPlatformEndpoints
             });
         });
 
+        app.MapGet("/platform/messages/timeline", async (
+            HttpContext ctx,
+            SloncordDbContext db,
+            string? scope,
+            Guid? serverId,
+            int? limit,
+            int? skip,
+            string? sort) =>
+        {
+            var config = ctx.RequestServices.GetRequiredService<IConfiguration>();
+            var (actor, modDeny) = await RequirePermOrDenyAsync(ctx, db, PlatformModeratorPerm.ViewChats);
+            if (modDeny is not null) return modDeny;
+
+            var dms = string.Equals(scope, "dms", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(scope, "dm", StringComparison.OrdinalIgnoreCase);
+            if (dms && !await SloncordPlatformPermissions.HasPermissionAsync(
+                    config, db, actor!.Value, PlatformModeratorPerm.ViewDms))
+                return Results.Json(new { error = "Нет права на просмотр личных сообщений" }, statusCode: StatusCodes.Status403Forbidden);
+
+            var take = Math.Clamp(limit ?? 50, 1, 500);
+            var offset = Math.Max(0, skip ?? 0);
+            var orderAsc = string.Equals(sort, "asc", StringComparison.OrdinalIgnoreCase);
+
+            var query =
+                from m in db.Messages.AsNoTracking()
+                join ch in db.Channels.AsNoTracking() on m.ChannelId equals ch.Id
+                where ch.Kind != ChannelKindEntity.Voice
+                select new { m, ch };
+
+            if (dms)
+                query = query.Where(x => x.ch.Kind == ChannelKindEntity.Direct);
+            else
+            {
+                query = query.Where(x => x.ch.Kind != ChannelKindEntity.Direct);
+                if (serverId is not null)
+                    query = query.Where(x => x.ch.ServerId == serverId);
+            }
+
+            var total = await query.CountAsync();
+            var pageRows = orderAsc
+                ? await query.OrderBy(x => x.m.CreatedAtUtc).ThenBy(x => x.m.Id).Skip(offset).Take(take).ToListAsync()
+                : await query.OrderByDescending(x => x.m.CreatedAtUtc).ThenByDescending(x => x.m.Id).Skip(offset).Take(take).ToListAsync();
+
+            var byId = new Dictionary<Guid, object>();
+            foreach (var group in pageRows.GroupBy(x => x.ch.Id))
+            {
+                var channel = group.First().ch;
+                var msgs = group.Select(x => x.m).ToList();
+                var dtos = await PlatformMessageDtosAsync(db, msgs, channel);
+                for (var i = 0; i < msgs.Count; i++)
+                    byId[msgs[i].Id] = dtos[i];
+            }
+
+            var messages = pageRows.Select(x => byId[x.m.Id]).ToList();
+            var totalPages = take > 0 ? (int)Math.Ceiling(total / (double)take) : 0;
+            return Results.Ok(new
+            {
+                scope = dms ? "dms" : "channels",
+                serverId = serverId?.ToString("D"),
+                messages,
+                total,
+                skip = offset,
+                take,
+                sort = orderAsc ? "asc" : "desc",
+                page = take > 0 ? offset / take + 1 : 1,
+                totalPages
+            });
+        });
+
         app.MapGet("/platform/messages/search", async (
             HttpContext ctx,
             SloncordDbContext db,
