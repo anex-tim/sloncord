@@ -10,9 +10,9 @@ type ReleaseMeta = {
   downloadUrl?: string;
 };
 
-const FIRST_POLL_DELAY_MS = 900;
-const POLL_INTERVAL_MS = 5 * 60 * 1000;
-const STARTUP_RETRY_DELAYS_MS = [8000, 45000];
+const FIRST_POLL_DELAY_MS = 800;
+const POLL_INTERVAL_MS = 45 * 1000;
+const STARTUP_RETRY_DELAYS_MS = [4000, 12000];
 export const MODERATION_RELEASE_CHECK_EVENT = "slonmod:release-check";
 
 function isRemoteVersionNewer(remote: string, local: string): boolean {
@@ -95,19 +95,19 @@ export function ModerationTitleBar() {
     async function poll(signal: AbortSignal): Promise<void> {
       if (cancelled) return;
       try {
+        const fromMainPromise = Promise.race([
+          window.slonmod?.fetchRelease?.().catch(() => null) ?? Promise.resolve(null),
+          new Promise<ReleaseMeta | null>((resolve) => {
+            window.setTimeout(() => resolve(null), 7000);
+          }),
+        ]);
+        const [fromMain, fromRenderer] = await Promise.all([
+          fromMainPromise,
+          fetchModerationReleaseFromGithub(signal).catch(() => null),
+        ]);
         const candidates: ModerationReleaseMeta[] = [];
-        try {
-          const fromMain = (await window.slonmod?.fetchRelease?.()) as ReleaseMeta | null;
-          if (fromMain?.version && fromMain?.downloadUrl) candidates.push(fromMain);
-        } catch {
-          /* ignore */
-        }
-        try {
-          const fromRenderer = await fetchModerationReleaseFromGithub(signal);
-          if (fromRenderer?.version && fromRenderer?.downloadUrl) candidates.push(fromRenderer);
-        } catch {
-          /* ignore */
-        }
+        if (fromMain?.version && fromMain?.downloadUrl) candidates.push(fromMain);
+        if (fromRenderer?.version && fromRenderer?.downloadUrl) candidates.push(fromRenderer);
         const data = pickNewestModerationRelease(candidates);
         if (cancelled || !data) return;
         const rv = String(data.version ?? "").trim();

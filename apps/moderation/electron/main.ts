@@ -106,11 +106,12 @@ function installModApiCertificateTrust(): void {
     return;
   }
   session.defaultSession.setCertificateVerifyProc((request, callback) => {
-    if (request.hostname === host || isTrustedUpdateHost(request.hostname)) {
+    if (request.hostname === host) {
       callback(0);
       return;
     }
-    callback(-2);
+    // -3 = обычная проверка Chromium. GitHub так проходит, самоподписанный сертификат API — нет.
+    callback(-3);
   });
 }
 
@@ -316,6 +317,20 @@ function metaFromGhRelease(data: {
   };
 }
 
+async function fetchJson(url: string, headers: Record<string, string>, timeoutMs = 5000): Promise<unknown | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { headers, signal: ctrl.signal });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchModerationReleaseFromGithub(): Promise<{
   version: string;
   downloadUrl: string;
@@ -338,58 +353,42 @@ async function fetchModerationReleaseFromGithub(): Promise<{
     if (seen.has(repo)) continue;
     seen.add(repo);
     const candidates: { version: string; downloadUrl: string; available: boolean; size?: number }[] = [];
-    try {
-      const mRes = await fetch(
+    const [manifestJson, latestJson, listJson] = await Promise.all([
+      fetchJson(
         `https://raw.githubusercontent.com/${repo}/main/releases/moderation-release.json?t=${Date.now()}`,
-        { headers: { "User-Agent": "Sloncord-Moderation" } }
-      );
-      if (mRes.ok) {
-        const j = (await mRes.json()) as {
-          version?: string;
-          downloadUrl?: string;
-          available?: boolean;
-          size?: number;
-        };
-        const version = normalizeModVersion(String(j?.version || ""));
-        const downloadUrl = String(j?.downloadUrl || "").trim();
-        if (version && downloadUrl && j?.available !== false) {
-          candidates.push({ version, downloadUrl, available: true, size: j.size });
-        }
+        { "User-Agent": "Sloncord-Moderation" }
+      ),
+      fetchJson(`https://api.github.com/repos/${repo}/releases/latest`, headers),
+      fetchJson(`https://api.github.com/repos/${repo}/releases?per_page=30`, headers),
+    ]);
+    if (manifestJson && typeof manifestJson === "object") {
+      const j = manifestJson as {
+        version?: string;
+        downloadUrl?: string;
+        available?: boolean;
+        size?: number;
+      };
+      const version = normalizeModVersion(String(j.version || ""));
+      const downloadUrl = String(j.downloadUrl || "").trim();
+      if (version && downloadUrl && j.available !== false) {
+        candidates.push({ version, downloadUrl, available: true, size: j.size });
       }
-    } catch {
-      /* ignore */
     }
-    try {
-      const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-        headers,
-      });
-      if (res.ok) {
-        const data = (await res.json()) as {
+    const latestMeta = metaFromGhRelease(
+      (latestJson || {}) as {
+        tag_name?: string;
+        assets?: { name?: string; browser_download_url?: string; size?: number }[];
+      }
+    );
+    if (latestMeta) candidates.push(latestMeta);
+    if (Array.isArray(listJson)) {
+      for (const item of listJson) {
+        const meta = metaFromGhRelease(item as {
           tag_name?: string;
           assets?: { name?: string; browser_download_url?: string; size?: number }[];
-        };
-        const meta = metaFromGhRelease(data);
+        });
         if (meta) candidates.push(meta);
       }
-    } catch {
-      /* ignore */
-    }
-    try {
-      const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=30`, {
-        headers,
-      });
-      if (res.ok) {
-        const list = (await res.json()) as {
-          tag_name?: string;
-          assets?: { name?: string; browser_download_url?: string; size?: number }[];
-        }[];
-        if (Array.isArray(list)) for (const item of list) {
-          const meta = metaFromGhRelease(item);
-          if (meta) candidates.push(meta);
-        }
-      }
-    } catch {
-      /* ignore */
     }
     let best: { version: string; downloadUrl: string; available: boolean; size?: number } | null = null;
     for (const c of candidates) {

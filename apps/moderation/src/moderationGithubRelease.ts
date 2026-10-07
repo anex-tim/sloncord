@@ -83,9 +83,25 @@ export function pickNewestModerationRelease(
   return best;
 }
 
+function withTimeout(parent: AbortSignal | undefined, ms: number): AbortSignal {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  const onAbort = () => ctrl.abort();
+  parent?.addEventListener("abort", onAbort, { once: true });
+  ctrl.signal.addEventListener(
+    "abort",
+    () => {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", onAbort);
+    },
+    { once: true }
+  );
+  return ctrl.signal;
+}
+
 async function fetchLatest(repo: string, signal?: AbortSignal): Promise<ModerationReleaseMeta | null> {
   const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-    signal,
+    signal: withTimeout(signal, 5000),
     headers: GITHUB_FETCH_HEADERS,
   });
   if (!res.ok) return null;
@@ -94,7 +110,7 @@ async function fetchLatest(repo: string, signal?: AbortSignal): Promise<Moderati
 
 async function fetchList(repo: string, signal?: AbortSignal): Promise<ModerationReleaseMeta | null> {
   const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=30`, {
-    signal,
+    signal: withTimeout(signal, 5000),
     headers: GITHUB_FETCH_HEADERS,
   });
   if (!res.ok) return null;
@@ -111,7 +127,7 @@ async function fetchList(repo: string, signal?: AbortSignal): Promise<Moderation
 async function fetchManifest(repo: string, signal?: AbortSignal): Promise<ModerationReleaseMeta | null> {
   const res = await fetch(
     `https://raw.githubusercontent.com/${repo}/main/releases/moderation-release.json?t=${Date.now()}`,
-    { signal, headers: { "User-Agent": "Sloncord-Moderation" } }
+    { signal: withTimeout(signal, 5000), headers: { "User-Agent": "Sloncord-Moderation" } }
   );
   if (!res.ok) return null;
   const data = (await res.json()) as ModerationReleaseMeta;
@@ -125,25 +141,15 @@ export async function fetchModerationReleaseFromGithub(
   signal?: AbortSignal
 ): Promise<ModerationReleaseMeta | null> {
   for (const repo of reposToTry()) {
+    const [fromManifest, fromLatest, fromList] = await Promise.all([
+      fetchManifest(repo, signal).catch(() => null),
+      fetchLatest(repo, signal).catch(() => null),
+      fetchList(repo, signal).catch(() => null),
+    ]);
     const candidates: ModerationReleaseMeta[] = [];
-    try {
-      const fromManifest = await fetchManifest(repo, signal);
-      if (fromManifest) candidates.push(fromManifest);
-    } catch {
-      /* ignore */
-    }
-    try {
-      const fromLatest = await fetchLatest(repo, signal);
-      if (fromLatest) candidates.push(fromLatest);
-    } catch {
-      /* ignore */
-    }
-    try {
-      const fromList = await fetchList(repo, signal);
-      if (fromList) candidates.push(fromList);
-    } catch {
-      /* ignore */
-    }
+    if (fromManifest) candidates.push(fromManifest);
+    if (fromLatest) candidates.push(fromLatest);
+    if (fromList) candidates.push(fromList);
     const best = pickNewestModerationRelease(candidates);
     if (best) return best;
   }
