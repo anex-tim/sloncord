@@ -141,6 +141,9 @@ internal sealed class VoiceRuntime
     private UdpClient? _udp;
     private IPEndPoint? _remote;
     private WaveInEvent? _waveIn;
+    private Timer? _silencePump;
+    private bool _stopping;
+    private readonly byte[] _silence20ms = new byte[1920];
     private IWavePlayer? _waveOut;
     private BufferedWaveProvider? _playBuffer;
     private OpusEncoder? _encoder;
@@ -185,19 +188,19 @@ internal sealed class VoiceRuntime
             DiscardOnBufferOverflow = true
         };
         _waveOut = CreateOutputDevice(_outputDeviceId);
-        _waveOut.Init(_playBuffer);
-        _waveOut.Play();
-
-        _inputDeviceIndex = ResolveWaveInIndex(_inputDeviceId);
-        _outputDeviceIndex = ResolveWaveOutIndex(_outputDeviceId);
-        _waveIn = new WaveInEvent
+        try
         {
-            DeviceNumber = Math.Max(0, _inputDeviceIndex),
-            WaveFormat = new WaveFormat(48000, 16, 1),
-            BufferMilliseconds = 20
-        };
-        _waveIn.DataAvailable += (_, e) => OnCapture(e.Buffer, e.BytesRecorded);
-        _waveIn.StartRecording();
+            _waveOut.Init(_playBuffer);
+            _waveOut.Play();
+        }
+        catch
+        {
+            try { _waveOut.Dispose(); } catch { /* ignore */ }
+            _waveOut = null;
+        }
+
+        _outputDeviceIndex = ResolveWaveOutIndex(_outputDeviceId);
+        TryStartMicrophone();
 
         _ = Task.Run(() => ReceiveLoop(_cts.Token));
         _emit(new { type = "ready" });
@@ -317,17 +320,79 @@ internal sealed class VoiceRuntime
     public void SetInputDeviceId(string? deviceId)
     {
         _inputDeviceId = deviceId;
-        if (_waveIn is null) return;
-        var idx = ResolveWaveInIndex(deviceId);
-        if (idx == _inputDeviceIndex) return;
-        _inputDeviceIndex = idx;
+        TryStartMicrophone();
+    }
+
+    /// <summary>
+    /// Нет микрофона — не ошибка: остаёмся в канале, слушаем и микшируем звук демонстрации тишиной.
+    /// </summary>
+    private bool TryStartMicrophone()
+    {
+        var count = 0;
+        try { count = WaveInEvent.DeviceCount; } catch { count = 0; }
+        if (count <= 0)
+        {
+            ReleaseMicrophone();
+            StartSilencePump();
+            return false;
+        }
+
+        var idx = ResolveWaveInIndex(_inputDeviceId);
+        if (idx < 0 || idx >= count) idx = 0;
+        if (_waveIn is not null && _silencePump is null && _inputDeviceIndex == idx) return true;
+
+        ReleaseMicrophone();
+        StopSilencePump();
         try
         {
-            _waveIn.StopRecording();
-            _waveIn.DeviceNumber = Math.Max(0, idx);
-            _waveIn.StartRecording();
+            var waveIn = new WaveInEvent
+            {
+                DeviceNumber = idx,
+                WaveFormat = new WaveFormat(48000, 16, 1),
+                BufferMilliseconds = 20
+            };
+            waveIn.DataAvailable += (_, e) => OnCapture(e.Buffer, e.BytesRecorded);
+            waveIn.RecordingStopped += (_, _) =>
+            {
+                if (_stopping || !ReferenceEquals(_waveIn, waveIn)) return;
+                ReleaseMicrophone();
+                StartSilencePump();
+            };
+            waveIn.StartRecording();
+            _waveIn = waveIn;
+            _inputDeviceIndex = idx;
+            return true;
         }
-        catch { /* ignore */ }
+        catch
+        {
+            ReleaseMicrophone();
+            StartSilencePump();
+            return false;
+        }
+    }
+
+    private void ReleaseMicrophone()
+    {
+        var waveIn = _waveIn;
+        _waveIn = null;
+        try { waveIn?.StopRecording(); } catch { /* ignore */ }
+        try { waveIn?.Dispose(); } catch { /* ignore */ }
+    }
+
+    private void StartSilencePump()
+    {
+        if (_silencePump is not null || _stopping) return;
+        _silencePump = new Timer(_ =>
+        {
+            try { OnCapture(_silence20ms, _silence20ms.Length); } catch { /* ignore */ }
+        }, null, 20, 20);
+    }
+
+    private void StopSilencePump()
+    {
+        var pump = _silencePump;
+        _silencePump = null;
+        try { pump?.Dispose(); } catch { /* ignore */ }
     }
 
     public void SetOutputDeviceId(string? deviceId)
@@ -472,9 +537,10 @@ internal sealed class VoiceRuntime
 
     public Task StopAsync()
     {
+        _stopping = true;
         try { _cts?.Cancel(); } catch { /* ignore */ }
-        try { _waveIn?.StopRecording(); } catch { /* ignore */ }
-        try { _waveIn?.Dispose(); } catch { /* ignore */ }
+        StopSilencePump();
+        ReleaseMicrophone();
         try { _waveOut?.Stop(); } catch { /* ignore */ }
         try { _waveOut?.Dispose(); } catch { /* ignore */ }
         try { _udp?.Dispose(); } catch { /* ignore */ }

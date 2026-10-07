@@ -1,9 +1,9 @@
 {
-  "version": "3.1.18",
+  "version": "3.1.19",
   "available": true,
   "fileName": "Sloncord-Setup-x64.exe",
-  "downloadUrl": "https://github.com/anex-tim/sloncord/releases/download/v3.1.18/Sloncord-Setup-x64.exe",
-  "size": 119927612,
-  "releasedAt": "2026-10-07T01:29:17.988Z",
+  "downloadUrl": "https://github.com/anex-tim/sloncord/releases/download/v3.1.19/Sloncord-Setup-x64.exe",
+  "size": 119931755,
+  "releasedAt": "2026-10-07T01:37:58.942Z",
   "githubRepo": "anex-tim/sloncord"
 }
