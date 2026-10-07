@@ -25,7 +25,13 @@ function loadEsbuild() {
 
 const esbuild = loadEsbuild();
 
-const { DEFAULT_SLONCORD_SERVER_ORIGIN } = await import("../../../shared/defaultServerOrigin.mjs");
+const sharedOriginCandidates = [
+  path.join(root, "shared", "defaultServerOrigin.mjs"),
+  path.join(monorepoRoot, "shared", "defaultServerOrigin.mjs"),
+];
+const sharedOriginPath = sharedOriginCandidates.find((p) => fs.existsSync(p));
+if (!sharedOriginPath) throw new Error("defaultServerOrigin.mjs not found");
+const { DEFAULT_SLONCORD_SERVER_ORIGIN } = await import(pathToFileURL(sharedOriginPath).href);
 
 const externalElectron = {
   bundle: true,
@@ -49,6 +55,9 @@ await esbuild.build({
   outfile: path.join(root, "dist-electron", "main.cjs"),
   define: {
     SLONMOD_EMBEDDED_API_BASE: JSON.stringify(embeddedApiBase),
+    SLONMOD_GITHUB_REPO: JSON.stringify(
+      String(process.env.SLONMOD_GITHUB_REPO || "anex-tim/sloncord-moderation").trim()
+    ),
   },
 });
 

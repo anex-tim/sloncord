@@ -1,0 +1,6 @@
+node_modules/
+dist-electron/
+dist-ui/
+release/
+*.log
+.DS_Store

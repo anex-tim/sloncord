@@ -6,6 +6,13 @@ contextBridge.exposeInMainWorld("slonmod", {
     ipcRenderer.sendSync("slonmod:set-api-base", url);
   },
   getAppVersion: (): Promise<string> => ipcRenderer.invoke("slonmod:get-app-version") as Promise<string>,
+  fetchRelease: (): Promise<{ version: string; downloadUrl: string; available?: boolean; size?: number } | null> =>
+    ipcRenderer.invoke("slonmod:fetch-release") as Promise<{
+      version: string;
+      downloadUrl: string;
+      available?: boolean;
+      size?: number;
+    } | null>,
   installUpdate: (installerUrl: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke("slonmod:install-update", installerUrl) as Promise<{ ok: boolean; error?: string }>,
   minimizeWindow: (): void => {

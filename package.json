@@ -16,6 +16,7 @@
     "deploy:backend": "node scripts/deploy-website.mjs",
     "deploy:with-clients": "node scripts/deploy-website.mjs --with-clients",
     "publish:desktop": "node scripts/publish-desktop-github.mjs",
+    "publish:moderation": "node scripts/publish-moderation-github.mjs",
     "github:bootstrap": "node scripts/github-bootstrap.mjs",
     "deploy:upload": "node scripts/deploy-website.mjs --no-build",
     "deploy:full": "node scripts/deploy-website.mjs --full-sftp",

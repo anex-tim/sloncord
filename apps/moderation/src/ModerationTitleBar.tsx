@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { getApiBase } from "./api";
 
 type ReleaseMeta = {
   version?: string;
@@ -86,20 +85,15 @@ export function ModerationTitleBar() {
     let cancelled = false;
 
     async function poll(): Promise<void> {
-      const baseRaw = getApiBase().trim();
-      if (!baseRaw || cancelled) return;
+      if (cancelled) return;
       try {
-        const origin = `${baseRaw.replace(/\/$/, "")}/`;
-        const url = new URL("/downloads/moderation-release.json", origin);
-        url.searchParams.set("_", String(Date.now()));
-        const res = await fetch(url.href, { cache: "no-store" });
-        if (!res.ok || cancelled) return;
-        const data = (await res.json()) as ReleaseMeta;
+        const data = (await window.slonmod?.fetchRelease?.()) as ReleaseMeta | null;
+        if (!data || cancelled) return;
         const rv = String(data?.version ?? "").trim();
         const du = String(data?.downloadUrl ?? "").trim();
-        if (!rv) return;
+        if (!rv || !du.startsWith("http")) return;
         setRemoteVersion(rv);
-        setDownloadUrl(du ? (du.startsWith("http") ? du : new URL(du, origin).href) : null);
+        setDownloadUrl(du);
       } catch {
         /* offline */
       }

@@ -9,6 +9,18 @@ import Store from "electron-store";
 
 declare const __dirname: string;
 declare const SLONMOD_EMBEDDED_API_BASE: string;
+declare const SLONMOD_GITHUB_REPO: string;
+
+const SLONMOD_GITHUB_REPO_DEFAULT = "anex-tim/sloncord-moderation";
+const SLONMOD_INSTALLER_ASSET = "sloncord-moderation-setup-x64.exe";
+
+function isTrustedUpdateHost(hostname: string): boolean {
+  const h = String(hostname || "").toLowerCase();
+  if (!h) return false;
+  if (h === "github.com" || h.endsWith(".github.com")) return true;
+  if (h === "githubusercontent.com" || h.endsWith(".githubusercontent.com")) return true;
+  return false;
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -54,6 +66,24 @@ function seedApiBaseIfEmpty(): void {
   if (next) store.set("apiBase", next);
 }
 
+function migrateLegacyDomainApiBase(): void {
+  const cur = String(store.get("apiBase") ?? "").trim();
+  if (!cur) return;
+  let host = "";
+  try {
+    host = new URL(cur).hostname.toLowerCase();
+  } catch {
+    return;
+  }
+  const legacy = host === "sloncord.ru" || host === "www.sloncord.ru" || host.endsWith(".sloncord.ru");
+  if (!legacy) return;
+  const next =
+    normalizeDefaultApiBase(SLONMOD_EMBEDDED_API_BASE) ||
+    normalizeDefaultApiBase(process.env.SLONMOD_DEFAULT_API_BASE);
+  if (next) store.set("apiBase", next);
+}
+
+migrateLegacyDomainApiBase();
 seedApiBaseIfEmpty();
 
 const SLONMOD_CLIENT_ID = "SloncordModeration/1";
@@ -76,7 +106,7 @@ function installModApiCertificateTrust(): void {
     return;
   }
   session.defaultSession.setCertificateVerifyProc((request, callback) => {
-    if (request.hostname === host) {
+    if (request.hostname === host || isTrustedUpdateHost(request.hostname)) {
       callback(0);
       return;
     }
@@ -104,11 +134,13 @@ ipcMain.on("slonmod:set-api-base", (_event, url: string) => {
 });
 
 function assertSafeInstallerUrl(raw: string): URL {
-  const api = String(store.get("apiBase") ?? "").trim();
-  if (!api) throw new Error("Не задан адрес сервера (API).");
-
   const u = new URL(raw.trim());
   if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("Недопустимый протокол URL установщика.");
+  if (!u.pathname.toLowerCase().endsWith(".exe")) throw new Error("Ожидался файл .exe.");
+  if (isTrustedUpdateHost(u.hostname)) return u;
+
+  const api = String(store.get("apiBase") ?? "").trim();
+  if (!api) throw new Error("Не задан адрес сервера (API).");
 
   let apiOrigin: URL;
   try {
@@ -117,9 +149,9 @@ function assertSafeInstallerUrl(raw: string): URL {
     throw new Error("Неверный сохранённый адрес API.");
   }
 
-  if (u.hostname !== apiOrigin.hostname) throw new Error("Установщик должен быть с того же хоста, что и ваш сервер.");
-  if (!u.pathname.toLowerCase().endsWith(".exe")) throw new Error("Ожидался файл .exe.");
-
+  if (u.hostname !== apiOrigin.hostname) {
+    throw new Error("Установщик должен быть с GitHub Releases или с того же хоста, что и сервер.");
+  }
   return u;
 }
 
@@ -246,6 +278,132 @@ function createWindow(): void {
 
   void win.loadURL("slonmod:///index.html");
 }
+
+function normalizeModVersion(tag: string): string {
+  return String(tag || "")
+    .trim()
+    .replace(/^v/i, "");
+}
+
+function compareModSemver(a: string, b: string): number {
+  const pa = normalizeModVersion(a).split(".").map((x) => parseInt(x, 10));
+  const pb = normalizeModVersion(b).split(".").map((x) => parseInt(x, 10));
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i += 1) {
+    const av = Number.isFinite(pa[i]) ? pa[i]! : 0;
+    const bv = Number.isFinite(pb[i]) ? pb[i]! : 0;
+    if (av > bv) return 1;
+    if (av < bv) return -1;
+  }
+  return 0;
+}
+
+function metaFromGhRelease(data: {
+  tag_name?: string;
+  assets?: { name?: string; browser_download_url?: string; size?: number }[];
+}): { version: string; downloadUrl: string; available: boolean; size?: number } | null {
+  const version = normalizeModVersion(String(data?.tag_name || ""));
+  const asset = (data?.assets || []).find(
+    (item) => String(item?.name || "").toLowerCase() === SLONMOD_INSTALLER_ASSET
+  );
+  const downloadUrl = String(asset?.browser_download_url || "").trim();
+  if (!version || !downloadUrl) return null;
+  return {
+    version,
+    downloadUrl,
+    available: true,
+    size: typeof asset?.size === "number" ? asset.size : undefined,
+  };
+}
+
+async function fetchModerationReleaseFromGithub(): Promise<{
+  version: string;
+  downloadUrl: string;
+  available: boolean;
+  size?: number;
+} | null> {
+  const envRepo = String(process.env.SLONMOD_GITHUB_REPO || "")
+    .trim()
+    .replace(/^https?:\/\/github\.com\//i, "")
+    .replace(/\/$/, "");
+  const embedded = String(SLONMOD_GITHUB_REPO || "").trim();
+  const repos = [envRepo, embedded, SLONMOD_GITHUB_REPO_DEFAULT].filter((r) => r.includes("/"));
+  const seen = new Set<string>();
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "Sloncord-Moderation",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  for (const repo of repos) {
+    if (seen.has(repo)) continue;
+    seen.add(repo);
+    const candidates: { version: string; downloadUrl: string; available: boolean; size?: number }[] = [];
+    try {
+      const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+        headers,
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          tag_name?: string;
+          assets?: { name?: string; browser_download_url?: string; size?: number }[];
+        };
+        const meta = metaFromGhRelease(data);
+        if (meta) candidates.push(meta);
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=20`, {
+        headers,
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const list = (await res.json()) as {
+          tag_name?: string;
+          assets?: { name?: string; browser_download_url?: string; size?: number }[];
+        }[];
+        for (const item of list || []) {
+          const meta = metaFromGhRelease(item);
+          if (meta) candidates.push(meta);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      const mRes = await fetch(
+        `https://raw.githubusercontent.com/${repo}/main/releases/moderation-release.json?t=${Date.now()}`,
+        { headers: { "User-Agent": "Sloncord-Moderation" }, cache: "no-store" }
+      );
+      if (mRes.ok) {
+        const j = (await mRes.json()) as {
+          version?: string;
+          downloadUrl?: string;
+          available?: boolean;
+          size?: number;
+        };
+        const version = normalizeModVersion(String(j?.version || ""));
+        const downloadUrl = String(j?.downloadUrl || "").trim();
+        if (version && downloadUrl && j?.available !== false) {
+          candidates.push({ version, downloadUrl, available: true, size: j.size });
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    let best: { version: string; downloadUrl: string; available: boolean; size?: number } | null = null;
+    for (const c of candidates) {
+      if (!c.version || !c.downloadUrl || c.available === false) continue;
+      if (!best || compareModSemver(c.version, best.version) > 0) best = c;
+    }
+    if (best) return best;
+  }
+  return null;
+}
+
+ipcMain.handle("slonmod:fetch-release", () => fetchModerationReleaseFromGithub());
 
 ipcMain.handle("slonmod:get-app-version", () => app.getVersion());
 

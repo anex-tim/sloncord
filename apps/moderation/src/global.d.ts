@@ -6,6 +6,7 @@ declare global {
       getApiBase?: () => string;
       setApiBase?: (url: string) => void;
       getAppVersion?: () => Promise<string>;
+      fetchRelease?: () => Promise<{ version?: string; downloadUrl?: string; available?: boolean } | null>;
       installUpdate?: (installerUrl: string) => Promise<{ ok: boolean; error?: string }>;
       minimizeWindow?: () => void;
       maximizeWindowToggle?: () => void;
