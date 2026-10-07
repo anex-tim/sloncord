@@ -1148,25 +1148,41 @@ function App() {
     if (desktopUpdateCheck.busy) return;
     setDesktopUpdateCheck({ busy: true, text: "Проверяем GitHub…", downloadUrl: "", remoteVersion: "" });
     dispatchDesktopReleaseCheckIfDesktop();
-    const ac = new AbortController();
-    const timer = window.setTimeout(() => {
-      try { ac.abort(); } catch { /* ignore */ }
-    }, 15000);
+    const readRemote = async () => {
+      const ac = new AbortController();
+      const timer = window.setTimeout(() => {
+        try { ac.abort(); } catch { /* ignore */ }
+      }, 20000);
+      try {
+        const candidates = [];
+        if (typeof window.sloncord?.fetchDesktopReleaseFromMain === "function") {
+          try {
+            const fromMain = await window.sloncord.fetchDesktopReleaseFromMain();
+            if (fromMain?.version && fromMain?.downloadUrl) candidates.push(fromMain);
+          } catch { /* ignore */ }
+        }
+        try {
+          const fromRenderer = await fetchDesktopReleaseFromGithub(ac.signal);
+          if (fromRenderer?.version && fromRenderer?.downloadUrl) candidates.push(fromRenderer);
+        } catch { /* ignore */ }
+        return pickNewestDesktopRelease(candidates);
+      } finally {
+        window.clearTimeout(timer);
+      }
+    };
     try {
       const local = String(await window.sloncord?.getAppVersion?.() || "").trim();
-      const candidates = [];
-      if (typeof window.sloncord?.fetchDesktopReleaseFromMain === "function") {
-        try {
-          const fromMain = await window.sloncord.fetchDesktopReleaseFromMain();
-          if (fromMain?.version && fromMain?.downloadUrl) candidates.push(fromMain);
-        } catch { /* ignore */ }
+      let best = await readRemote();
+      let remote = String(best?.version || "").trim();
+      if (local && remote && !isNewerDesktopVersion(remote, local)) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const again = await readRemote();
+        const againVer = String(again?.version || "").trim();
+        if (again && againVer && (!remote || isNewerDesktopVersion(againVer, remote))) {
+          best = again;
+          remote = againVer;
+        }
       }
-      try {
-        const fromRenderer = await fetchDesktopReleaseFromGithub(ac.signal);
-        if (fromRenderer?.version && fromRenderer?.downloadUrl) candidates.push(fromRenderer);
-      } catch { /* ignore */ }
-      const best = pickNewestDesktopRelease(candidates);
-      const remote = String(best?.version || "").trim();
       const url = String(best?.downloadUrl || "").trim();
       if (!remote || !url) {
         setDesktopUpdateCheck({
@@ -1188,7 +1204,9 @@ function App() {
       }
       setDesktopUpdateCheck({
         busy: false,
-        text: local ? `Установлена последняя версия (${local}).` : "Установлена последняя версия.",
+        text: local
+          ? `На GitHub сейчас ${remote}. Установлена ${local}.`
+          : `На GitHub сейчас ${remote}.`,
         downloadUrl: "",
         remoteVersion: remote,
       });
@@ -1199,8 +1217,6 @@ function App() {
         downloadUrl: "",
         remoteVersion: "",
       });
-    } finally {
-      window.clearTimeout(timer);
     }
   }
 

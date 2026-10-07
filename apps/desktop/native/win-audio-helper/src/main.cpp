@@ -377,10 +377,9 @@ static bool init_process_loopback_mode(DWORD targetPid, PROCESS_LOOPBACK_MODE mo
     REFERENCE_TIME dur;
   };
   const Attempt attempts[] = {
-    { "mix-loopback", AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, false, 0 },
-    { "mix-evt", AUDCLNT_STREAMFLAGS_EVENTCALLBACK, false, 0 },
-    { "pcm-evt", AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, true, 0 },
+    // Этот набор на Win11 реально отдаёт звук других программ в режиме exclude.
     { "pcm-loopback", AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, true, 0 },
+    { "mix-loopback", AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, false, 0 },
   };
   for (const Attempt& a : attempts) {
     HRESULT hr = E_FAIL;

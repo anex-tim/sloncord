@@ -1124,11 +1124,9 @@ ipcMain.handle(
         excludeRootPid: number
       ) {
         const pipe = `\\\\.\\pipe\\sloncord-audio-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
-        // Process-loopback EXCLUDE на этой Windows отдаёт тишину. Обычный loopback устройства
-        // захватывает звук других программ.
-        const args: string[] = ["--pipe", pipe, "--mode", "system"];
+        // Исключаем дерево Sloncord: в дорожку попадает звук системы, но не сам голосовой чат.
+        const args: string[] = ["--pipe", pipe, "--mode", "screen", "--excludeTargetPid", String(excludeRootPid || process.pid)];
         void mode;
-        void excludeRootPid;
         const proc = spawn(helperPath, args, { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
         let helperErr = "";
         proc.stderr?.setEncoding("utf8");
@@ -1163,7 +1161,7 @@ ipcMain.handle(
           }
           throw new Error(
             detail
-              ? `Не удалось начать захват системного звука (${detail}).`
+              ? `Не удалось начать захват системного звука. ${detail}`
               : "Не удалось начать захват системного звука. Демонстрация продолжится без него."
           );
         }
@@ -1467,13 +1465,16 @@ async function fetchDesktopReleaseFromMainProcess(): Promise<{
     Accept: "application/vnd.github+json",
     "User-Agent": "Sloncord-Desktop",
     "X-GitHub-Api-Version": "2022-11-28",
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
   };
+  const bust = Date.now();
   for (const repo of repos) {
     if (seen.has(repo)) continue;
     seen.add(repo);
     const candidates: { version: string; downloadUrl: string; available: boolean; size?: number }[] = [];
     try {
-      const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+      const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest?t=${bust}`, {
         headers,
         cache: "no-store",
       });
@@ -1489,7 +1490,7 @@ async function fetchDesktopReleaseFromMainProcess(): Promise<{
       /* ignore */
     }
     try {
-      const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=30`, {
+      const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=20&t=${bust}`, {
         headers,
         cache: "no-store",
       });
@@ -1508,7 +1509,7 @@ async function fetchDesktopReleaseFromMainProcess(): Promise<{
     }
     try {
       const mRes = await fetch(
-        `https://raw.githubusercontent.com/${repo}/main/releases/desktop-release.json?t=${Date.now()}`,
+        `https://raw.githubusercontent.com/${repo}/main/releases/desktop-release.json?t=${bust}`,
         { headers: { "User-Agent": "Sloncord-Desktop" }, cache: "no-store" }
       );
       if (mRes.ok) {

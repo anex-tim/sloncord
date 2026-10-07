@@ -30,6 +30,8 @@ const GITHUB_FETCH_HEADERS: HeadersInit = {
   Accept: "application/vnd.github+json",
   "X-GitHub-Api-Version": "2022-11-28",
   "User-Agent": "Sloncord-Desktop",
+  "Cache-Control": "no-cache",
+  Pragma: "no-cache",
 };
 
 function normalizeVersion(tag: string): string {
@@ -89,7 +91,7 @@ async function fetchLatestFromGithubApi(
   repo: string,
   signal?: AbortSignal
 ): Promise<DesktopReleaseMeta | null> {
-  const apiUrl = `https://api.github.com/repos/${repo}/releases/latest`;
+  const apiUrl = `https://api.github.com/repos/${repo}/releases/latest?t=${Date.now()}`;
   const res = await fetch(apiUrl, {
     signal,
     cache: "no-store",
@@ -108,7 +110,7 @@ async function fetchFromGithubReleaseList(
   repo: string,
   signal?: AbortSignal
 ): Promise<DesktopReleaseMeta | null> {
-  const apiUrl = `https://api.github.com/repos/${repo}/releases?per_page=30`;
+  const apiUrl = `https://api.github.com/repos/${repo}/releases?per_page=20&t=${Date.now()}`;
   const res = await fetch(apiUrl, {
     signal,
     cache: "no-store",
