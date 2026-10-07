@@ -96,19 +96,6 @@ export function ChatsPanel({ me, onError, onStatus }: Props) {
     );
   }, [selectedServerId, channelFilter, loadChannels, onError]);
 
-  useEffect(() => {
-    if (selectedServerId && feedScope === "dms") setFeedScope("channels");
-  }, [selectedServerId, feedScope]);
-
-  useEffect(() => {
-    if (feedScope) {
-      void loadTimelinePage(feedScope, selectedServerId, 1, pageSize, messageSort);
-      return;
-    }
-    if (!selectedChannelId) return;
-    void loadMessagesPage(selectedChannelId, 1, pageSize, messageSort);
-  }, [feedScope, selectedServerId, selectedChannelId, pageSize, messageSort, loadMessagesPage, loadTimelinePage]);
-
   const loadTimelinePage = useCallback(
     async (scope: "channels" | "dms", serverId: string, nextPage: number, size: number, sort: MessageSort) => {
       setLoading(true);
@@ -140,6 +127,19 @@ export function ChatsPanel({ me, onError, onStatus }: Props) {
     },
     [onError]
   );
+
+  useEffect(() => {
+    if (selectedServerId && feedScope === "dms") setFeedScope("channels");
+  }, [selectedServerId, feedScope]);
+
+  useEffect(() => {
+    if (feedScope) {
+      void loadTimelinePage(feedScope, selectedServerId, 1, pageSize, messageSort);
+      return;
+    }
+    if (!selectedChannelId) return;
+    void loadMessagesPage(selectedChannelId, 1, pageSize, messageSort);
+  }, [feedScope, selectedServerId, selectedChannelId, pageSize, messageSort, loadMessagesPage, loadTimelinePage]);
 
   const openChannel = (ch: PlatformChannel) => {
     setFeedScope("");
