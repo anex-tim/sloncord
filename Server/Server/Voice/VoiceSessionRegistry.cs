@@ -40,9 +40,12 @@ internal sealed class VoiceSessionRegistry
             return _graceTimers.ContainsKey(key);
     }
 
-    public bool TryScheduleGrace(string roomId, Guid userId, Action onExpire)
+    public bool TryScheduleGrace(string roomId, Guid userId, Action onExpire) =>
+        TryScheduleGrace(roomId, userId, onExpire, _graceSeconds);
+
+    public bool TryScheduleGrace(string roomId, Guid userId, Action onExpire, int graceSeconds)
     {
-        if (_graceSeconds <= 0) return false;
+        if (graceSeconds <= 0) return false;
 
         var key = Key(roomId, userId);
         CancellationTokenSource cts;
@@ -61,7 +64,7 @@ internal sealed class VoiceSessionRegistry
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(_graceSeconds), cts.Token);
+                await Task.Delay(TimeSpan.FromSeconds(graceSeconds), cts.Token);
                 lock (_sync)
                 {
                     if (_graceTimers.TryGetValue(key, out var cur) && ReferenceEquals(cur, cts))

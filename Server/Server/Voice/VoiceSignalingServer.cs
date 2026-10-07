@@ -138,7 +138,17 @@ internal sealed class VoiceSignalingServer
         {
             while (socket.State == WebSocketState.Open && !ct.IsCancellationRequested)
             {
-                var result = await socket.ReceiveAsync(buffer.AsMemory(0, buffer.Length), ct);
+                using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                idle.CancelAfter(TimeSpan.FromSeconds(12));
+                System.Net.WebSockets.ValueWebSocketReceiveResult result;
+                try
+                {
+                    result = await socket.ReceiveAsync(buffer.AsMemory(0, buffer.Length), idle.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    break;
+                }
                 if (result.MessageType == WebSocketMessageType.Close) break;
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
@@ -455,10 +465,11 @@ internal sealed class VoiceSignalingServer
             set.Remove(socket);
             if (set.Count == 0)
             {
-                var useGrace = !skipGrace && _sessions.GraceSeconds > 0
+                var graceSeconds = isNativeSocket ? 8 : _sessions.GraceSeconds;
+                var useGrace = !skipGrace && graceSeconds > 0
                     && ((isSfuSocket && _gateway.Enabled) || isNativeSocket);
                 if (useGrace
-                    && _sessions.TryScheduleGrace(roomId, userId, () => _ = FinalizeGraceLeaveAsync(roomId, userId)))
+                    && _sessions.TryScheduleGrace(roomId, userId, () => _ = FinalizeGraceLeaveAsync(roomId, userId), graceSeconds))
                 {
                     ClearUserScreenShareLocked(roomId, userId);
                 }

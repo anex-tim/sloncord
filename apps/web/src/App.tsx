@@ -3848,6 +3848,42 @@ function App() {
   }, [selectedServerId]);
 
   useEffect(() => {
+    if (!token) return undefined;
+    let alive = true;
+    const pull = async () => {
+      for (const ch of allVoiceChannels) {
+        if (!alive) return;
+        const id = String(ch?.id || "");
+        if (!id) continue;
+        try {
+          const p = await api(`/channels/${id}/voice/presence`, { method: "GET" });
+          if (!alive || !p) continue;
+          setVoicePresenceByChannelId((prev) => ({
+            ...prev,
+            [id]: {
+              ...(prev[id] || {}),
+              ...p,
+              channelId: id,
+              userIds: Array.isArray(p.userIds) ? p.userIds.map((x) => String(x)) : [],
+              screenShareUserIds: Array.isArray(p.screenShareUserIds) ? p.screenShareUserIds.map((x) => String(x)) : [],
+              mutedUserIds: Array.isArray(p.mutedUserIds) ? p.mutedUserIds.map((x) => String(x)) : [],
+              deafenedUserIds: Array.isArray(p.deafenedUserIds) ? p.deafenedUserIds.map((x) => String(x)) : [],
+              speakingUserIds: Array.isArray(p.speakingUserIds) ? p.speakingUserIds.map((x) => String(x)) : [],
+            },
+          }));
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+    const timer = setInterval(() => { void pull(); }, 6000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [token, allVoiceChannels]);
+
+  useEffect(() => {
     if (!token) return;
     (async () => {
       for (const ch of allVoiceChannels) {

@@ -220,7 +220,7 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
 
   function startPing() {
     stopPing();
-    pingTimer = setInterval(() => send({ type: "ping" }), 25000);
+    pingTimer = setInterval(() => send({ type: "ping" }), 5000);
   }
 
   function stopPing() {

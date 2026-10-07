@@ -1477,6 +1477,11 @@ button, input, textarea, label, select {
   z-index: 1;
 }
 
+.screen-drag-handle,
+.screen-controls {
+  z-index: 3;
+}
+
 .screen-overlay--full .screen-video {
   border-radius: 0;
 }
