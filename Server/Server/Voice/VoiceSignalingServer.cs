@@ -223,6 +223,12 @@ internal sealed class VoiceSignalingServer
                         _ = RelayScreenFrameAsync(userId, CanonicalRoomId(msg.RoomId), msg.Payload, socket, CancellationToken.None)
                             .ContinueWith(_ => System.Threading.Interlocked.Exchange(ref _screenFrameRelays, 0));
                     }
+                    else if (msg.Type == "screenAudio")
+                    {
+                        if (string.IsNullOrWhiteSpace(msg.RoomId) || string.IsNullOrWhiteSpace(msg.Payload)) continue;
+                        if (msg.Payload.Length > 120_000) continue;
+                        _ = RelayScreenAudioAsync(userId, CanonicalRoomId(msg.RoomId), msg.Payload, socket, CancellationToken.None);
+                    }
                     else if (msg.Type == "setUserFlags")
                     {
                         if (string.IsNullOrWhiteSpace(msg.RoomId)) continue;
@@ -1005,6 +1011,28 @@ internal sealed class VoiceSignalingServer
         }
         if (targets.Count == 0) return;
         var msg = new { type = "screenFrame", userId = userId.ToString("D"), jpeg };
+        foreach (var peer in targets)
+            await SendJsonAsync(peer, msg, ct);
+    }
+
+    private async Task RelayScreenAudioAsync(Guid userId, string roomId, string pcmBase64, WebSocket from, CancellationToken ct)
+    {
+        List<WebSocket> targets;
+        lock (_sync)
+        {
+            if (!_rooms.TryGetValue(roomId, out var room)) return;
+            targets = new List<WebSocket>();
+            foreach (var set in room.Values)
+            {
+                foreach (var peer in set)
+                {
+                    if (ReferenceEquals(peer, from)) continue;
+                    if (peer.State == WebSocketState.Open) targets.Add(peer);
+                }
+            }
+        }
+        if (targets.Count == 0) return;
+        var msg = new { type = "screenAudio", userId = userId.ToString("D"), pcm = pcmBase64 };
         foreach (var peer in targets)
             await SendJsonAsync(peer, msg, ct);
     }

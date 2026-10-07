@@ -1010,6 +1010,19 @@ ipcMain.handle("sloncord:set-native-voice-watch-screen", async (_e, sessionId: n
   }
 });
 
+ipcMain.handle("sloncord:play-native-screen-pcm", async (_e, pcmBase64: string, gain: number) => {
+  try {
+    const pcm = String(pcmBase64 || "");
+    if (!pcm || pcm.length > 120_000) return { ok: false };
+    nativeVoiceHelper?.proc.stdin?.write(
+      `${JSON.stringify({ cmd: "playScreenPcm", pcmBase64: pcm, gain: Number(gain) || 0 })}\n`
+    );
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+});
+
 ipcMain.handle("sloncord:set-native-voice-speaker-gain", async (_e, gain: number) => {
   try {
     nativeVoiceHelper?.proc.stdin?.write(`${JSON.stringify({ cmd: "setSpeakerGain", gain: Number(gain) || 0 })}\n`);

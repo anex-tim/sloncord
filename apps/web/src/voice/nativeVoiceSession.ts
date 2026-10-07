@@ -47,6 +47,8 @@ type SloncordNativeVoiceBridge = {
   setNativeVoiceMicGain?: (gain: number) => Promise<{ ok: boolean }>;
   setNativeVoiceSpeakerGain?: (gain: number) => Promise<{ ok: boolean }>;
   setNativeVoiceWatchScreen?: (sessionId: number) => Promise<{ ok: boolean }>;
+  playNativeScreenPcm?: (pcmBase64: string, gain: number) => Promise<{ ok: boolean }>;
+  onNativeScreenAudio?: (cb: (chunk: ArrayBuffer) => void) => () => void;
   sendNativeVideoFrame?: (jpegBase64: string) => Promise<{ ok: boolean }>;
   onNativeVoiceSpeaking?: (cb: (detail: { speaking: boolean; level: number; threshold?: number }) => void) => () => void;
   onNativeRemoteVideo?: (cb: (detail: { sessionId: number; jpegBase64: string }) => void) => () => void;
@@ -84,11 +86,13 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
   let unsubSpeaking: (() => void) | null = null;
   let unsubError: (() => void) | null = null;
   let unsubRemoteVideo: (() => void) | null = null;
+  let unsubScreenPcm: (() => void) | null = null;
   let lastNativeUdpRefreshAt = 0;
   let nativeUdpRefreshInFlight: Promise<void> | null = null;
   let screenSharing = false;
   const serverSessionByUser = new Map<string, number>();
   let watchedScreenUserId = "";
+  let screenListenGain = 1;
   let screenStream: MediaStream | null = null;
   let screenCaptureTimer: ReturnType<typeof setInterval> | null = null;
   let screenVideoEl: HTMLVideoElement | null = null;
@@ -155,6 +159,21 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     flushPendingFrames();
   }
 
+  function sameVoiceUser(a: string, b: string) {
+    const na = String(a || "").replace(/-/g, "").toLowerCase();
+    const nb = String(b || "").replace(/-/g, "").toLowerCase();
+    return na.length > 0 && na === nb;
+  }
+
+  function bytesToBase64(bytes: Uint8Array): string {
+    let binary = "";
+    const step = 8192;
+    for (let i = 0; i < bytes.length; i += step) {
+      binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + step, bytes.length)));
+    }
+    return btoa(binary);
+  }
+
   async function setWatchScreen(userId: string) {
     const id = String(userId || "");
     watchedScreenUserId = id;
@@ -182,6 +201,11 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     onScreenFrame: (userId, jpegBase64) => {
       if (!userId || !jpegBase64) return;
       showRemoteFrame(String(userId), String(jpegBase64));
+    },
+    onScreenAudio: (userId, pcmBase64) => {
+      if (!pcmBase64 || !watchedScreenUserId || screenListenGain <= 0) return;
+      if (!sameVoiceUser(userId, watchedScreenUserId)) return;
+      void bridge()?.playNativeScreenPcm?.(pcmBase64, screenListenGain);
     },
     onRoomRoster: (msg) => {
       const ids = Array.isArray(msg.userIds) ? msg.userIds.map((x) => String(x)) : [];
@@ -481,6 +505,13 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
           }
           showRemoteFrame(uid, jpegBase64);
         }) ?? null;
+      unsubScreenPcm =
+        bridge()?.onNativeScreenAudio?.((ab) => {
+          if (destroyed || !screenSharing || !ab || ab.byteLength < 4 || ab.byteLength > 64 * 1024) return;
+          const b64 = bytesToBase64(new Uint8Array(ab));
+          if (!b64 || b64.length > 100_000) return;
+          sendPresence({ type: "screenAudio", roomId: opts.roomId, payload: b64 });
+        }) ?? null;
 
       await presence.connect();
       if (destroyed) throw new Error("destroyed");
@@ -557,7 +588,14 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     },
 
     setScreenAudioVolume(pid: string, pct: number) {
-      void setWatchScreen(Number(pct) > 0 ? String(pid || "") : "");
+      const v = Math.max(0, Math.min(300, Number(pct) || 0));
+      if (v <= 0) {
+        watchedScreenUserId = "";
+        screenListenGain = 0;
+        return;
+      }
+      watchedScreenUserId = String(pid || "");
+      screenListenGain = Math.min(3, v / 100);
     },
 
     setWatchScreen,
@@ -602,10 +640,12 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       unsubSpeaking?.();
       unsubError?.();
       unsubRemoteVideo?.();
+      unsubScreenPcm?.();
       void bridge()?.stopNativeVoice?.();
       unsubSpeaking = null;
       unsubError = null;
       unsubRemoteVideo = null;
+      unsubScreenPcm = null;
       screenUrlByUserId.clear();
       voiceFsm.transition("idle", "destroy");
       setState({

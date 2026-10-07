@@ -121,6 +121,17 @@ internal static class Program
             continue;
         }
 
+        if (cmd == "playScreenPcm" && runtime is not null)
+        {
+            var gain = doc.RootElement.TryGetProperty("gain", out var gEl) ? gEl.GetDouble() : 1;
+            var b64 = doc.RootElement.TryGetProperty("pcmBase64", out var pEl) ? pEl.GetString() : null;
+            if (!string.IsNullOrWhiteSpace(b64))
+            {
+                try { runtime.PlayScreenStereo(Convert.FromBase64String(b64), gain); } catch { /* ignore */ }
+            }
+            continue;
+        }
+
         if (cmd == "mixScreenPcm" && runtime is not null)
         {
             var b64 = doc.RootElement.TryGetProperty("pcmBase64", out var pEl) ? pEl.GetString() : null;
@@ -305,6 +316,28 @@ internal sealed class VoiceRuntime
     public void ClearScreenPcm()
     {
         lock (_screenLock) _screenMono.Clear();
+    }
+
+    /// <summary>s16le stereo 48 kHz from the streamer, played on the selected output.</summary>
+    public void PlayScreenStereo(byte[] pcm, double gain)
+    {
+        if (Deafened || _playBuffer is null || gain <= 0.0001 || pcm.Length < 4) return;
+        var frames = pcm.Length / 4;
+        var bytes = new byte[frames * 2];
+        var g = (float)gain * _speakerGain;
+        for (var i = 0; i < frames; i++)
+        {
+            var l = BitConverter.ToInt16(pcm, i * 4);
+            var r = BitConverter.ToInt16(pcm, i * 4 + 2);
+            var m = (int)(((l + r) / 2f) * g);
+            if (m > 32767) m = 32767;
+            if (m < -32768) m = -32768;
+            BinaryPrimitives.WriteInt16LittleEndian(bytes.AsSpan(i * 2), (short)m);
+        }
+        lock (_sync)
+        {
+            _playBuffer.AddSamples(bytes, 0, bytes.Length);
+        }
     }
 
     private void PumpScreenAudio()
@@ -495,28 +528,7 @@ internal sealed class VoiceRuntime
             }
             if (kind == VoiceProtocol.KindScreenAudio)
             {
-                if (Deafened || _watchScreenSession == 0 || _screenDecoder is null || _playBuffer is null)
-                    continue;
-                var screenPcm = new short[960 * 6];
-                var screenDecoded = _screenDecoder.Decode(payload, 0, payload.Length, screenPcm, 0, screenPcm.Length, false);
-                if (screenDecoded <= 0) continue;
-                if (Math.Abs(_speakerGain - 1f) > 0.01f)
-                {
-                    for (var i = 0; i < screenDecoded; i++)
-                    {
-                        var v = (int)(screenPcm[i] * _speakerGain);
-                        if (v > 32767) v = 32767;
-                        if (v < -32768) v = -32768;
-                        screenPcm[i] = (short)v;
-                    }
-                }
-                RememberEcho(screenPcm, screenDecoded);
-                var screenBytes = new byte[screenDecoded * 2];
-                Buffer.BlockCopy(screenPcm, 0, screenBytes, 0, screenBytes.Length);
-                lock (_sync)
-                {
-                    _playBuffer.AddSamples(screenBytes, 0, screenBytes.Length);
-                }
+                // Звук демонстрации приходит по голосовому WebSocket и играет через playScreenPcm.
                 continue;
             }
             if (kind != VoiceProtocol.KindAudio || Deafened) continue;
