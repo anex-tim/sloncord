@@ -233,6 +233,42 @@ internal static class SloncordPlatformEndpoints
             return Results.Ok(new { ok = true, removed });
         });
 
+        app.MapPost("/platform/users/{userId:guid}/approval", async (
+            HttpContext ctx,
+            SloncordDbContext db,
+            Guid userId,
+            AccountApprovalRequest? req) =>
+        {
+            var (actor, modDeny) = await RequirePermOrDenyAsync(ctx, db, PlatformModeratorPerm.ApproveAccounts);
+            if (modDeny is not null) return modDeny;
+            if (req is null) return Results.BadRequest(new { error = "Укажите, одобрить аккаунт или отозвать одобрение." });
+
+            var u = await db.Users.FirstOrDefaultAsync(x => x.Id == userId);
+            if (u is null) return Results.NotFound(new { error = "Пользователь не найден" });
+            if (SloncordPlatformPermissions.IsPlatformRoot(u.Login))
+                return Results.BadRequest(new { error = "Этот аккаунт нельзя лишить одобрения." });
+
+            u.AccountApproved = req.Approved;
+            if (!req.Approved)
+            {
+                var sessions = await db.Sessions.Where(s => s.UserId == userId).ToListAsync();
+                db.Sessions.RemoveRange(sessions);
+            }
+
+            db.PlatformModerationLogs.Add(new PlatformModerationLogEntity
+            {
+                Id = Guid.NewGuid(),
+                ActorUserId = actor!.Value,
+                Action = req.Approved ? "account.approve" : "account.revoke",
+                TargetType = "user",
+                TargetId = userId.ToString("D"),
+                Details = u.Login,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+            return Results.Ok(new { ok = true, accountApproved = u.AccountApproved });
+        });
+
         app.MapPost("/platform/users/{userId:guid}/ban", async (
             HttpContext ctx,
             SloncordDbContext db,
@@ -1347,6 +1383,7 @@ internal static class SloncordPlatformEndpoints
 
     private sealed record PlatformModeratorUpdateRequest(bool? Revoke, string[]? Permissions);
     private sealed record PlatformIpBanRequest(string? IpAddress, string? Reason, int? DurationMinutes);
+    private sealed record AccountApprovalRequest(bool Approved);
     private sealed record PlatformBanRequest(string? Reason, int? DurationMinutes);
     private sealed record PlatformChatMuteRequest(string? Reason, int? DurationMinutes);
     private sealed record PlatformResolveReportRequest(
@@ -1499,6 +1536,7 @@ internal static class SloncordPlatformEndpoints
         isPlatformRoot = SloncordPlatformPermissions.IsPlatformRoot(u.Login),
         isPlatformModerator = u.IsPlatformModerator,
         platformModeratorPermissions = SloncordPlatformModeratorPerms.ToKeys(u.PlatformModeratorPermissions),
+        accountApproved = u.AccountApproved || SloncordPlatformPermissions.IsPlatformRoot(u.Login),
         isPlatformBanned = SloncordPlatformBan.IsActive(u),
         platformBannedAtUtc = u.PlatformBannedAtUtc?.ToString("O"),
         platformBannedUntilUtc = SloncordPlatformBan.IsActive(u) ? u.PlatformBannedUntilUtc?.ToString("O") : null,

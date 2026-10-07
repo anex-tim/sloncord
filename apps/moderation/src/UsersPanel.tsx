@@ -137,9 +137,10 @@ export function UsersPanel({ me, fmtDate, onReloadAudit, onStatus, onError, clea
                   <td>{u.serverCount ?? 0}</td>
                   <td>
                     {u.isPlatformModerator ? <span className="badge ok">mod</span> : null}
+                    {u.accountApproved === false ? <span className="badge warn">ожидает</span> : null}
                     {u.isPlatformBanned ? <span className="badge bad">ban</span> : null}
                     {u.isChatMuted ? <span className="badge warn">mute</span> : null}
-                    {!u.isPlatformBanned && !u.isChatMuted && !u.isPlatformModerator ? (
+                    {u.accountApproved !== false && !u.isPlatformBanned && !u.isChatMuted && !u.isPlatformModerator ? (
                       <span className="badge ok">ok</span>
                     ) : null}
                   </td>

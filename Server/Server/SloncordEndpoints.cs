@@ -44,7 +44,7 @@ internal static class SloncordEndpoints
             if (!AuthRateLimiter.Allow("reg:" + ipKey, 8, TimeSpan.FromHours(1)))
                 return Results.Json(new { error = "Слишком много регистраций. Попробуйте позже." }, statusCode: StatusCodes.Status429TooManyRequests);
             if (string.IsNullOrWhiteSpace(req.Login) || string.IsNullOrWhiteSpace(req.Password) || string.IsNullOrWhiteSpace(req.Nickname))
-                return Results.BadRequest(new { error = "login, password и nickname обязательны" });
+                return Results.BadRequest(new { error = "Укажите логин, пароль и ник." });
             if (req.Password.Length < 6) return Results.BadRequest(new { error = "Минимальная длина пароля - 6 символов" });
 
             var login = req.Login.Trim();
@@ -62,12 +62,13 @@ internal static class SloncordEndpoints
                 PasswordHash = hash,
                 Salt = salt,
                 Bio = string.Empty,
+                AccountApproved = false,
                 CreatedAtUtc = DateTime.UtcNow
             };
             db.Users.Add(user);
             SloncordUserActivity.Add(db, user.Id, "user.register", $"login={login}", SloncordClientIp.Resolve(ctx));
             await db.SaveChangesAsync();
-            return Results.Ok(new { ok = true });
+            return Results.Ok(new { ok = true, pendingApproval = true });
         });
 
         app.MapPost("/auth/login", async (HttpContext ctx, SloncordDbContext db, LoginRequest req) =>
@@ -76,13 +77,17 @@ internal static class SloncordEndpoints
             if (!AuthRateLimiter.Allow("login:" + ipKey, 30, TimeSpan.FromMinutes(10)))
                 return Results.Json(new { error = "Слишком много попыток входа. Попробуйте позже." }, statusCode: StatusCodes.Status429TooManyRequests);
 
-            if (string.IsNullOrWhiteSpace(req.Login) || string.IsNullOrWhiteSpace(req.Password)) return Results.BadRequest(new { error = "login и password обязательны" });
+            if (string.IsNullOrWhiteSpace(req.Login) || string.IsNullOrWhiteSpace(req.Password))
+                return Results.BadRequest(new { error = "Укажите логин и пароль." });
 
             var u = await db.Users.FirstOrDefaultAsync(x => x.Login.ToLower() == req.Login.Trim().ToLower());
-            if (u is null) return Results.Unauthorized();
+            if (u is null)
+                return Results.Json(new { error = "Неверный логин или пароль." }, statusCode: StatusCodes.Status401Unauthorized);
 
-            if (!PasswordHasher.Verify(req.Password, u.Salt, u.PasswordHash)) return Results.Unauthorized();
-            if (PasswordHasher.IsLegacy(u.PasswordHash))
+            if (!PasswordHasher.Verify(req.Password, u.Salt, u.PasswordHash))
+                return Results.Json(new { error = "Неверный логин или пароль." }, statusCode: StatusCodes.Status401Unauthorized);
+            var upgradedPassword = PasswordHasher.IsLegacy(u.PasswordHash);
+            if (upgradedPassword)
                 u.PasswordHash = PasswordHasher.Hash(req.Password, u.Salt);
             await SloncordPlatformBan.TryExpireAsync(db, u.Id);
             if (SloncordPlatformBan.IsActive(u))
@@ -94,6 +99,15 @@ internal static class SloncordEndpoints
             var ip = SloncordClientIp.Resolve(ctx);
             if (await SloncordPlatformIpBan.IsIpBannedAsync(db, ip))
                 return Results.Json(new { error = "Доступ с этого IP заблокирован" }, statusCode: StatusCodes.Status403Forbidden);
+
+            if (!u.AccountApproved && !SloncordPlatformPermissions.IsPlatformRoot(u.Login))
+            {
+                if (upgradedPassword)
+                    await db.SaveChangesAsync();
+                return Results.Json(
+                    new { error = "Аккаунт ещё не одобрен модерацией. Войти можно после одобрения.", code = "account_pending" },
+                    statusCode: StatusCodes.Status403Forbidden);
+            }
 
             var now = DateTime.UtcNow;
             var token = NewSessionToken();
@@ -2787,11 +2801,15 @@ internal static class SloncordEndpoints
         var t = token.Trim();
         if (t.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) t = t[7..].Trim();
         if (t.Length < 6) return null;
-        var id = await db.Sessions.AsNoTracking()
-            .Where(s => s.Token == t)
-            .Select(s => s.UserId)
-            .FirstOrDefaultAsync();
-        return id == Guid.Empty ? null : id;
+        var row = await (
+            from s in db.Sessions.AsNoTracking()
+            join u in db.Users.AsNoTracking() on s.UserId equals u.Id
+            where s.Token == t
+            select new { u.Id, u.Login, u.AccountApproved }
+        ).FirstOrDefaultAsync();
+        if (row is null || row.Id == Guid.Empty) return null;
+        if (!row.AccountApproved && !SloncordPlatformPermissions.IsPlatformRoot(row.Login)) return null;
+        return row.Id;
     }
 
     /// <summary>

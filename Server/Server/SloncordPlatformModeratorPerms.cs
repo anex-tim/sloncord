@@ -22,6 +22,7 @@ public enum PlatformModeratorPerm : ulong
     ViewUserIps = 1UL << 15,
     BanIps = 1UL << 16,
     ClearUserActivity = 1UL << 17,
+    ApproveAccounts = 1UL << 18,
 }
 
 internal static class SloncordPlatformModeratorPerms
@@ -49,7 +50,10 @@ internal static class SloncordPlatformModeratorPerms
 
         if (!Has(p, PlatformModeratorPerm.ViewUsers))
         {
-            p &= ~(ulong)(PlatformModeratorPerm.ViewUserActivity | PlatformModeratorPerm.ViewUserIps | PlatformModeratorPerm.ClearUserActivity);
+            p &= ~(ulong)(PlatformModeratorPerm.ViewUserActivity
+                | PlatformModeratorPerm.ViewUserIps
+                | PlatformModeratorPerm.ClearUserActivity
+                | PlatformModeratorPerm.ApproveAccounts);
         }
 
         if (!Has(p, PlatformModeratorPerm.ViewUserActivity))
@@ -89,6 +93,7 @@ internal static class SloncordPlatformModeratorPerms
         PlatformModeratorPerm.ViewUserIps => "viewUserIps",
         PlatformModeratorPerm.BanIps => "banIps",
         PlatformModeratorPerm.ClearUserActivity => "clearUserActivity",
+        PlatformModeratorPerm.ApproveAccounts => "approveAccounts",
         _ => perm.ToString()
     };
 
@@ -133,6 +138,7 @@ internal static class SloncordPlatformModeratorPerms
         var rows = new (PlatformModeratorPerm Perm, string Label, PlatformModeratorPerm? Requires)[]
         {
             (PlatformModeratorPerm.ViewUsers, "Просмотр списка пользователей", null),
+            (PlatformModeratorPerm.ApproveAccounts, "Одобрять аккаунты", PlatformModeratorPerm.ViewUsers),
             (PlatformModeratorPerm.BanUsers, "Заблокировать аккаунт", PlatformModeratorPerm.ViewUsers),
             (PlatformModeratorPerm.MuteChat, "Заблокировать чат", PlatformModeratorPerm.ViewUsers),
             (PlatformModeratorPerm.RevokeSessions, "Завершать сессии пользователей", PlatformModeratorPerm.ViewUsers),

@@ -60,6 +60,7 @@ export function ModeratorPermissionsForm({
           next.delete("muteChat");
           next.delete("revokeSessions");
           next.delete("permanentBan");
+          next.delete("approveAccounts");
         }
       } else if (canEnablePerm(next, key)) {
         next.add(key);

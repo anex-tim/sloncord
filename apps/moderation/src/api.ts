@@ -58,9 +58,12 @@ export async function api<T = unknown>(
   if (!res.ok) {
     const body = data as { error?: string; detail?: string } | null;
     const err =
-      res.status === 403
-        ? body?.error || "Доступ запрещён (403). Проверьте, что ваш логин в ModeratorLogins на сервере."
-        : body?.error || res.statusText || `HTTP ${res.status}`;
+      body?.error
+      || (res.status === 401 ? "Неверный логин или пароль."
+        : res.status === 403 ? "Недостаточно прав для этого действия."
+        : res.status === 404 ? "Ничего не найдено."
+        : res.status >= 500 ? "Сервер временно недоступен. Попробуйте ещё раз."
+        : "Не удалось выполнить запрос.");
     const detail = body?.detail ? `: ${body.detail}` : "";
     throw new Error(String(err) + detail);
   }
@@ -77,6 +80,7 @@ export type PlatformUser = {
   isPlatformRoot?: boolean;
   isPlatformModerator?: boolean;
   platformModeratorPermissions?: string[];
+  accountApproved?: boolean;
   isPlatformBanned?: boolean;
   platformBannedAtUtc?: string | null;
   platformBanReason?: string;

@@ -1,9 +1,9 @@
 {
-  "version": "3.1.14",
+  "version": "3.1.15",
   "available": true,
   "fileName": "Sloncord-Setup-x64.exe",
   "downloadUrl": "/downloads/Sloncord-Setup-x64.exe",
-  "size": 119930143,
-  "releasedAt": "2026-10-07T00:37:42.120Z",
-  "buildFileName": "Sloncord Setup 3.1.14.exe"
+  "size": 119927740,
+  "releasedAt": "2026-10-07T00:47:51.256Z",
+  "buildFileName": "Sloncord Setup 3.1.15.exe"
 }

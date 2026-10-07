@@ -257,6 +257,7 @@ public sealed class UserEntity
     public Guid? AvatarFileId { get; set; }
     public DateTime CreatedAtUtc { get; set; }
     public DateTime? LastSeenAtUtc { get; set; }
+    public bool AccountApproved { get; set; } = true;
     public bool IsPlatformModerator { get; set; }
     public ulong PlatformModeratorPermissions { get; set; }
     public bool IsPlatformBanned { get; set; }

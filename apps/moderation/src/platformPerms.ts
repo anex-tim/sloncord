@@ -16,7 +16,8 @@ export type PlatformPermKey =
   | "viewUserActivity"
   | "viewUserIps"
   | "banIps"
-  | "clearUserActivity";
+  | "clearUserActivity"
+  | "approveAccounts";
 
 export type PlatformPermDef = {
   key: PlatformPermKey;
@@ -26,6 +27,7 @@ export type PlatformPermDef = {
 
 export const PLATFORM_PERM_DEFS: PlatformPermDef[] = [
   { key: "viewUsers", label: "Просмотр списка пользователей" },
+  { key: "approveAccounts", label: "Одобрять аккаунты", requires: "viewUsers" },
   { key: "banUsers", label: "Заблокировать аккаунт", requires: "viewUsers" },
   { key: "muteChat", label: "Заблокировать чат", requires: "viewUsers" },
   { key: "revokeSessions", label: "Завершать сессии пользователей", requires: "viewUsers" },
@@ -117,6 +119,7 @@ export function sanitizePerms(keys: PlatformPermKey[]): PlatformPermKey[] {
     set.delete("muteChat");
     set.delete("revokeSessions");
     set.delete("permanentBan");
+    set.delete("approveAccounts");
   }
   return PLATFORM_PERM_DEFS.map((d) => d.key).filter((k) => set.has(k));
 }

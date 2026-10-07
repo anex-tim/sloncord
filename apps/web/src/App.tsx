@@ -2100,7 +2100,7 @@ function App() {
       try {
         const ce = ev as CustomEvent<{ message?: string }>;
         const m = String(ce?.detail?.message || "").trim();
-        if (m) setStatus(m);
+        if (m && /ошиб|не запуск|не получ|не удалось/i.test(m)) setError(m);
       } catch {
         /* ignore */
       }
@@ -2138,16 +2138,20 @@ function App() {
       }
     }
     if (!response.ok) {
-      let message = data?.error || data?.title || `Ошибка ${response.status}`;
+      const serverMsg = typeof data?.error === "string" ? data.error.trim() : "";
       const banMsg = formatPlatformBanMessage(data);
-      if (banMsg) message = banMsg;
-      // If server returned non-JSON (often HTML on 500), surface a short snippet for debugging.
-      if ((!data || typeof data === "string") && text) {
-        const snippet = String(text)
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 220);
-        if (snippet && !banMsg) message = `${message}: ${snippet}`;
+      let message = banMsg || (serverMsg && !/^ошибка\s*\d+/i.test(serverMsg) ? serverMsg : "");
+      if (!message) {
+        const p = String(path || "");
+        if (response.status === 401 && /\/auth\/login/.test(p)) message = "Неверный логин или пароль.";
+        else if (response.status === 401) message = "Сессия истекла. Войдите снова.";
+        else if (response.status === 403) message = "Недостаточно прав для этого действия.";
+        else if (response.status === 404) message = "Ничего не найдено.";
+        else if (response.status === 413) message = "Файл слишком большой.";
+        else if (response.status === 429) message = "Слишком много попыток. Подождите и попробуйте снова.";
+        else if (response.status >= 500) message = "Сервер временно недоступен. Попробуйте ещё раз.";
+        else if (response.status === 400) message = "Проверьте введённые данные.";
+        else message = "Не удалось выполнить запрос.";
       }
       throw new Error(message);
     }
@@ -3011,17 +3015,11 @@ function App() {
 
   const prevVoiceConnectedRef = useRef(false);
   useEffect(() => {
-    const connected = !!voiceState.connected && !voiceState.joining;
-    const inVoicePanel = connected && !!activeVoiceChannelId;
-    if (inVoicePanel) {
-      setStatus("В голосовом канале (native UDP).");
-    } else {
-      setStatus((s) => {
-        const t = String(s || "");
-        if (t.includes("голосовом канале") || t.includes("native UDP")) return "";
-        return s;
-      });
-    }
+    setStatus((s) => {
+      const t = String(s || "");
+      if (t.includes("голосовом канале") || t.includes("native UDP")) return "";
+      return s;
+    });
   }, [voiceState.connected, voiceState.joining, activeVoiceChannelId]);
 
   useEffect(() => {
@@ -4258,16 +4256,13 @@ function App() {
       if (tryScrollToMessage(rid)) return;
     }
 
-    setStatus("Загрузка сообщения…");
     const found = await loadOlderUntilMessageId(rid);
     if (!found) {
-      setStatus("");
       setError("Исходное сообщение не найдено в этой переписке");
       return;
     }
 
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-    setStatus("");
     if (!tryScrollToMessage(rid)) {
       setError("Не удалось прокрутить к сообщению");
     }
@@ -4365,7 +4360,7 @@ function App() {
           nickname: authForm.nickname
         })
       });
-      setStatus("Аккаунт создан. Теперь войдите.");
+      setStatus("Аккаунт создан. Войти можно после одобрения модератором.");
       setMode("login");
     } catch (e) {
       setError(e.message);
@@ -4381,7 +4376,6 @@ function App() {
       });
       setToken(data.token);
       localStorage.setItem("sloncord_token", data.token);
-      setStatus("Вход выполнен");
     } catch (e) {
       setError(e.message);
     }
@@ -5854,7 +5848,6 @@ function App() {
       } catch {
         // ignore
       }
-      setStatus("В голосовом канале. Сигнальные обмены идут в фоне.");
     } catch (e) {
       if (voiceJoinAborted()) return;
       const raw = String(e?.message || e || "");
@@ -5916,7 +5909,7 @@ function App() {
         remotePeerUserIds: [],
         rosterUserIds: []
       });
-      setStatus("Голосовой чат отключен");
+      setStatus("");
     } catch (e) {
       setError(e.message || String(e));
     }

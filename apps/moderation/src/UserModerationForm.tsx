@@ -65,6 +65,7 @@ export function UserModerationForm({
   const chatMuted = isChatMuted(user);
   const rootProtected = isRootUser(user) && !me?.isRoot;
   const canActOnUser = canModerateUser(me, user);
+  const canApprove = canActOnUser && hasPerm(me, "approveAccounts") && !isRootUser(user);
   const canBan = canActOnUser && hasPerm(me, "banUsers");
   const canMute = canActOnUser && hasPerm(me, "muteChat");
   const canRevoke = canActOnUser && hasPerm(me, "revokeSessions");
@@ -135,6 +136,21 @@ export function UserModerationForm({
         /* onError внутри action */
       }
     })();
+  };
+
+  const setApproval = async (approved: boolean) => {
+    clearAlerts();
+    try {
+      await api(`/platform/users/${user.id}/approval`, {
+        method: "POST",
+        body: { approved },
+      });
+      onStatus(approved ? "Аккаунт одобрен" : "Одобрение отозвано");
+      onReloadAudit();
+      await onReloadUsers();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const banUser = async () => {
@@ -251,6 +267,23 @@ export function UserModerationForm({
         {onAppointModerator ? (
           <button type="button" className="mod-appoint-btn" onClick={onAppointModerator}>
             Назначить модератором
+          </button>
+        ) : null}
+        {canApprove ? (
+          <button
+            type="button"
+            className={user.accountApproved === false ? undefined : "ghost"}
+            onClick={() =>
+              askConfirm({
+                message: user.accountApproved === false
+                  ? "Одобрить аккаунт? Пользователь сможет войти в Sloncord."
+                  : "Отозвать одобрение? Пользователь больше не сможет пользоваться Sloncord.",
+                confirmLabel: user.accountApproved === false ? "Одобрить" : "Отозвать",
+                action: () => setApproval(user.accountApproved === false),
+              })
+            }
+          >
+            {user.accountApproved === false ? "Одобрить аккаунт" : "Отозвать одобрение"}
           </button>
         ) : null}
         {!banned && canBan ? (

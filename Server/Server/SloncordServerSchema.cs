@@ -173,6 +173,7 @@ internal static class SloncordServerSchema
 
         await db.Database.ExecuteSqlRawAsync(
             """
+            ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "AccountApproved" boolean NOT NULL DEFAULT TRUE;
             ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "IsPlatformModerator" boolean NOT NULL DEFAULT FALSE;
             ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "PlatformModeratorPermissions" bigint NOT NULL DEFAULT 0;
             ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "IsPlatformBanned" boolean NOT NULL DEFAULT FALSE;
