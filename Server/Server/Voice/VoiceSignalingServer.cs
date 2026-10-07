@@ -143,7 +143,7 @@ internal sealed class VoiceSignalingServer
                 using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 // Дольше двух пропущенных ping (клиент шлёт каждые 2 с). Убитый процесс
                 // не шлёт ping, даже если TCP ещё держит прокси.
-                idle.CancelAfter(TimeSpan.FromSeconds(12));
+                idle.CancelAfter(TimeSpan.FromSeconds(20));
                 System.Net.WebSockets.ValueWebSocketReceiveResult result;
                 try
                 {
@@ -487,9 +487,10 @@ internal sealed class VoiceSignalingServer
             set.Remove(socket);
             if (set.Count == 0)
             {
-                // Обрыв native-сокета (убийство процесса) убирает человека сразу.
-                // Короткая пауза только у повторного входа в ту же комнату, чтобы не мигать ростером.
-                var graceSeconds = isNativeSocket ? (nativeGraceSeconds ?? 0) : _sessions.GraceSeconds;
+                // Короткий обрыв сокета (кадры демонстрации, переподключение) не должен
+                // выкидывать человека из ростера: клиент возвращается за пару секунд.
+                // Явный leaveRoom по-прежнему убирает сразу.
+                var graceSeconds = isNativeSocket ? (nativeGraceSeconds ?? 8) : _sessions.GraceSeconds;
                 var useGrace = !skipGrace && graceSeconds > 0
                     && ((isSfuSocket && _gateway.Enabled) || isNativeSocket);
                 if (useGrace

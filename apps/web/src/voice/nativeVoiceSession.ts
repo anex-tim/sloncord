@@ -194,6 +194,8 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     },
     onReconnectSuccess: () => {
       if (destroyed) return;
+      applyMuteDeafen();
+      if (screenSharing) publishScreenFlag(true);
       const now = Date.now();
       if (now - lastNativeUdpRefreshAt < 4000) return;
       void refreshNativeUdp().catch(() => {});
