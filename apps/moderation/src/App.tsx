@@ -417,7 +417,6 @@ export function App() {
           ))}
         </nav>
         <div className="sidebar-foot">
-          <div className="muted small">{headerSubtitle}</div>
           <button type="button" className="ghost" onClick={logout}>Выйти</button>
         </div>
       </aside>
