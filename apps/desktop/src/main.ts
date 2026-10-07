@@ -998,6 +998,17 @@ ipcMain.handle("sloncord:set-native-voice-mic-gain", async (_e, gain: number) =>
   }
 });
 
+ipcMain.handle("sloncord:set-native-voice-watch-screen", async (_e, sessionId: number) => {
+  try {
+    nativeVoiceHelper?.proc.stdin?.write(
+      `${JSON.stringify({ cmd: "setWatchScreen", sessionId: Number(sessionId) || 0 })}\n`
+    );
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+});
+
 ipcMain.handle("sloncord:set-native-voice-speaker-gain", async (_e, gain: number) => {
   try {
     nativeVoiceHelper?.proc.stdin?.write(`${JSON.stringify({ cmd: "setSpeakerGain", gain: Number(gain) || 0 })}\n`);

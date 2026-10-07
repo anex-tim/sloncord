@@ -19,6 +19,7 @@ internal static class VoiceProtocol
     public const byte KindBind = 2;
     public const byte KindVideo = 3;
     public const byte KindVideoFrag = 4;
+    public const byte KindScreenAudio = 5;
     public const int MaxPayload = 1200;
 }
 
@@ -101,6 +102,15 @@ internal static class Program
             continue;
         }
 
+        if (cmd == "setWatchScreen" && runtime is not null)
+        {
+            var sid = doc.RootElement.TryGetProperty("sessionId", out var sEl) && sEl.ValueKind == JsonValueKind.Number
+                ? sEl.GetInt32()
+                : 0;
+            runtime.SetWatchScreen(sid);
+            continue;
+        }
+
         if (cmd == "videoFrame" && runtime is not null)
         {
             var b64 = doc.RootElement.TryGetProperty("jpegBase64", out var jEl) ? jEl.GetString() : null;
@@ -168,6 +178,11 @@ internal sealed class VoiceRuntime
     private BufferedWaveProvider? _playBuffer;
     private OpusEncoder? _encoder;
     private OpusDecoder? _decoder;
+    private OpusEncoder? _screenEncoder;
+    private OpusDecoder? _screenDecoder;
+    private Timer? _screenAudioTimer;
+    private ushort _watchScreenSession;
+    private uint _screenSeq;
     private CancellationTokenSource? _cts;
     private uint _seq;
     private readonly object _sync = new();
@@ -222,6 +237,12 @@ internal sealed class VoiceRuntime
         _remote = new IPEndPoint(IPAddress.Parse(_host), _port);
         _encoder = new OpusEncoder(48000, 1, OpusApplication.OPUS_APPLICATION_VOIP);
         _decoder = new OpusDecoder(48000, 1);
+        _screenEncoder = new OpusEncoder(48000, 1, OpusApplication.OPUS_APPLICATION_AUDIO);
+        _screenDecoder = new OpusDecoder(48000, 1);
+        _screenAudioTimer = new Timer(_ =>
+        {
+            try { PumpScreenAudio(); } catch { /* ignore */ }
+        }, null, 20, 20);
 
         await SendBindAsync();
 
@@ -258,6 +279,11 @@ internal sealed class VoiceRuntime
     }
 
     /// <summary>s16le stereo (обычно 48 kHz с WASAPI process-loopback) → моно в очередь микса.</summary>
+    public void SetWatchScreen(int sessionId)
+    {
+        _watchScreenSession = sessionId is > 0 and <= 65535 ? (ushort)sessionId : (ushort)0;
+    }
+
     public void PushScreenStereo(byte[] pcm)
     {
         if (pcm.Length < 4) return;
@@ -281,15 +307,24 @@ internal sealed class VoiceRuntime
         lock (_screenLock) _screenMono.Clear();
     }
 
-    private void PullScreen(short[] dst)
+    private void PumpScreenAudio()
     {
+        if (_screenEncoder is null || _udp is null || _remote is null) return;
+        short[] frame;
         lock (_screenLock)
         {
-            var n = Math.Min(dst.Length, _screenMono.Count);
-            for (var i = 0; i < n; i++) dst[i] = _screenMono[i];
-            if (n > 0) _screenMono.RemoveRange(0, n);
-            for (var i = n; i < dst.Length; i++) dst[i] = 0;
+            if (_screenMono.Count < 960) return;
+            frame = _screenMono.GetRange(0, 960).ToArray();
+            _screenMono.RemoveRange(0, 960);
         }
+        var energy = 0;
+        for (var i = 0; i < frame.Length; i++) energy = Math.Max(energy, Math.Abs(frame[i]));
+        if (energy == 0) return;
+        var opus = new byte[4000];
+        var len = _screenEncoder.Encode(frame, 0, 960, opus, 0, opus.Length);
+        if (len <= 0) return;
+        var packet = BuildPacket(VoiceProtocol.KindScreenAudio, _sessionId, _screenSeq++, (uint)Environment.TickCount, opus.AsSpan(0, len).ToArray());
+        try { _udp.Send(packet, packet.Length, _remote); } catch { /* ignore */ }
     }
 
     public void SetMicGain(double percent)
@@ -392,11 +427,7 @@ internal sealed class VoiceRuntime
         if (_encoder is null || _udp is null || _remote is null) return;
         var samples = count / 2;
         if (samples <= 0) return;
-        var screen = new short[samples];
-        PullScreen(screen);
-        var screenEnergy = 0;
-        for (var i = 0; i < samples; i++) screenEnergy = Math.Max(screenEnergy, Math.Abs(screen[i]));
-        if (Muted && screenEnergy == 0)
+        if (Muted)
         {
             EmitMeter(0, _noiseFloor, false);
             return;
@@ -431,13 +462,7 @@ internal sealed class VoiceRuntime
         var speakingNow = !Muted && rms > threshold;
         EmitMeter(rms, threshold, speakingNow);
 
-        for (var i = 0; i < samples; i++)
-        {
-            var mixed = mic[i] + screen[i];
-            if (mixed > 32767) mixed = 32767;
-            if (mixed < -32768) mixed = -32768;
-            _pcmQueue.Add((short)mixed);
-        }
+        for (var i = 0; i < samples; i++) _pcmQueue.Add(mic[i]);
 
         const int frameSize = 960;
         while (_pcmQueue.Count >= frameSize)
@@ -466,6 +491,32 @@ internal sealed class VoiceRuntime
             if (kind is VoiceProtocol.KindVideo or VoiceProtocol.KindVideoFrag)
             {
                 HandleRemoteVideo(sessionId, sequence, kind, payload);
+                continue;
+            }
+            if (kind == VoiceProtocol.KindScreenAudio)
+            {
+                if (Deafened || _watchScreenSession == 0 || sessionId != _watchScreenSession || _screenDecoder is null || _playBuffer is null)
+                    continue;
+                var screenPcm = new short[960 * 6];
+                var screenDecoded = _screenDecoder.Decode(payload, 0, payload.Length, screenPcm, 0, screenPcm.Length, false);
+                if (screenDecoded <= 0) continue;
+                if (Math.Abs(_speakerGain - 1f) > 0.01f)
+                {
+                    for (var i = 0; i < screenDecoded; i++)
+                    {
+                        var v = (int)(screenPcm[i] * _speakerGain);
+                        if (v > 32767) v = 32767;
+                        if (v < -32768) v = -32768;
+                        screenPcm[i] = (short)v;
+                    }
+                }
+                RememberEcho(screenPcm, screenDecoded);
+                var screenBytes = new byte[screenDecoded * 2];
+                Buffer.BlockCopy(screenPcm, 0, screenBytes, 0, screenBytes.Length);
+                lock (_sync)
+                {
+                    _playBuffer.AddSamples(screenBytes, 0, screenBytes.Length);
+                }
                 continue;
             }
             if (kind != VoiceProtocol.KindAudio || Deafened) continue;
@@ -716,6 +767,8 @@ internal sealed class VoiceRuntime
         _stopping = true;
         try { _cts?.Cancel(); } catch { /* ignore */ }
         StopSilencePump();
+        try { _screenAudioTimer?.Dispose(); } catch { /* ignore */ }
+        _screenAudioTimer = null;
         ReleaseMicrophone();
         try { _waveOut?.Stop(); } catch { /* ignore */ }
         try { _waveOut?.Dispose(); } catch { /* ignore */ }

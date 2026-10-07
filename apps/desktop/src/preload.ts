@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld("sloncord", {
     ipcRenderer.invoke("sloncord:set-native-voice-mic-gain", gain),
   setNativeVoiceSpeakerGain: (gain: number): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke("sloncord:set-native-voice-speaker-gain", gain),
+  setNativeVoiceWatchScreen: (sessionId: number): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("sloncord:set-native-voice-watch-screen", sessionId),
   onNativeVoiceSpeaking: (cb: (detail: { speaking: boolean; level: number; threshold?: number }) => void): (() => void) => {
     const fn = (_e: unknown, detail: { speaking: boolean; level: number }): void => {
       cb(detail);

@@ -129,7 +129,8 @@ internal sealed class NativeVoiceUdpServer : BackgroundService
         if (header.Kind == NativeVoicePacket.KindKeepAlive) return;
         if (header.Kind is not NativeVoicePacket.KindAudio
             and not NativeVoicePacket.KindVideo
-            and not NativeVoicePacket.KindVideoFrag) return;
+            and not NativeVoicePacket.KindVideoFrag
+            and not NativeVoicePacket.KindScreenAudio) return;
 
         var peers = _registry.GetPeersExcept(senderRoom, senderUserId.Value);
         if (peers.Count == 0) return;

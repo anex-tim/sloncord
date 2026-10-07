@@ -1471,6 +1471,12 @@ button, input, textarea, label, select {
   display: block;
 }
 
+#screen-native-img.screen-video {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
 .screen-overlay--full .screen-video {
   border-radius: 0;
 }

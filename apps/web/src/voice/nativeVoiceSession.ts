@@ -45,6 +45,7 @@ type SloncordNativeVoiceBridge = {
   setNativeVoiceProcessing?: (opts: Record<string, unknown>) => Promise<{ ok: boolean }>;
   setNativeVoiceMicGain?: (gain: number) => Promise<{ ok: boolean }>;
   setNativeVoiceSpeakerGain?: (gain: number) => Promise<{ ok: boolean }>;
+  setNativeVoiceWatchScreen?: (sessionId: number) => Promise<{ ok: boolean }>;
   sendNativeVideoFrame?: (jpegBase64: string) => Promise<{ ok: boolean }>;
   onNativeVoiceSpeaking?: (cb: (detail: { speaking: boolean; level: number; threshold?: number }) => void) => () => void;
   onNativeRemoteVideo?: (cb: (detail: { sessionId: number; jpegBase64: string }) => void) => () => void;
@@ -89,6 +90,9 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
   let screenCanvas: HTMLCanvasElement | null = null;
   const screenUrlByUserId = new Map<string, string>();
   const sessionToUserId = new Map<number, string>();
+  const pendingJpegBySession = new Map<number, string>();
+  let rosterKey = "";
+  let mapGen = 0;
 
   const voiceFsm = createVoiceSessionState();
 
@@ -96,19 +100,44 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     opts.onState(patch);
   }
 
+  function showRemoteFrame(userId: string, jpegBase64: string) {
+    const url = `data:image/jpeg;base64,${jpegBase64}`;
+    ensureRemoteHostImg(userId, url);
+  }
+
+  function flushPendingFrames() {
+    for (const [sid, jpeg] of pendingJpegBySession) {
+      const uid = sessionToUserId.get(sid);
+      if (!uid) continue;
+      pendingJpegBySession.delete(sid);
+      showRemoteFrame(uid, jpeg);
+    }
+  }
+
   async function rebuildSessionMap() {
-    sessionToUserId.clear();
-    for (const uid of lastRoster) {
+    const ids = lastRoster.filter(Boolean);
+    const key = ids.join(",");
+    if (key === rosterKey && sessionToUserId.size > 0) return;
+    rosterKey = key;
+    const gen = ++mapGen;
+    const next = new Map<number, string>();
+    for (const uid of ids) {
       if (!uid || uid === String(opts.selfUserId)) continue;
       try {
-        const sid = await deriveNativeSessionId(uid, opts.roomId);
-        sessionToUserId.set(sid, uid);
+        next.set(await deriveNativeSessionId(uid, opts.roomId), uid);
       } catch {
         /* ignore */
       }
     }
-    const selfSid = await deriveNativeSessionId(String(opts.selfUserId), opts.roomId);
-    sessionToUserId.set(selfSid, String(opts.selfUserId));
+    try {
+      next.set(await deriveNativeSessionId(String(opts.selfUserId), opts.roomId), String(opts.selfUserId));
+    } catch {
+      /* ignore */
+    }
+    if (gen !== mapGen) return;
+    sessionToUserId.clear();
+    for (const [sid, uid] of next) sessionToUserId.set(sid, uid);
+    flushPendingFrames();
   }
 
   const presence = createNativePresenceClient({
@@ -379,10 +408,14 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       }) ?? null;
       unsubRemoteVideo =
         bridge()?.onNativeRemoteVideo?.(({ sessionId, jpegBase64 }) => {
-          const uid = sessionToUserId.get(Number(sessionId));
-          if (!uid || !jpegBase64) return;
-          const url = `data:image/jpeg;base64,${jpegBase64}`;
-          ensureRemoteHostImg(uid, url);
+          if (!jpegBase64) return;
+          const sid = Number(sessionId);
+          const uid = sessionToUserId.get(sid);
+          if (!uid) {
+            pendingJpegBySession.set(sid, jpegBase64);
+            return;
+          }
+          showRemoteFrame(uid, jpegBase64);
         }) ?? null;
 
       await presence.connect();
@@ -459,8 +492,22 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       /* no-op */
     },
 
-    setScreenAudioVolume(_pid: string, _pct: number) {
-      /* screen audio via native helper — later */
+    setScreenAudioVolume(pid: string, pct: number) {
+      void setWatchScreen(Number(pct) > 0 ? String(pid || "") : "");
+    },
+
+    async setWatchScreen(userId: string) {
+      const id = String(userId || "");
+      if (!id) {
+        void bridge()?.setNativeVoiceWatchScreen?.(0);
+        return;
+      }
+      try {
+        const sid = await deriveNativeSessionId(id, opts.roomId);
+        void bridge()?.setNativeVoiceWatchScreen?.(sid);
+      } catch {
+        /* ignore */
+      }
     },
 
     getInputMeter() {

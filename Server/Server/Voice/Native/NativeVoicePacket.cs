@@ -16,6 +16,7 @@ internal static class NativeVoicePacket
     public const byte KindBind = 2;
     public const byte KindVideo = 3;
     public const byte KindVideoFrag = 4;
+    public const byte KindScreenAudio = 5;
 
     public const int MaxPayloadLength = 1200;
 

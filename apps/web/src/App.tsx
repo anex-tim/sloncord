@@ -6288,6 +6288,7 @@ function App() {
       }
     } catch { /* ignore */ }
     setScreenView({ open: false, peerId: "", mode: "full" });
+    try { document.getElementById("screen-native-img")?.remove(); } catch { /* ignore */ }
     const v = screenVideoRef.current;
     if (v) {
       try {
@@ -6342,6 +6343,7 @@ function App() {
           /* ignore */
         }
       }
+      try { document.getElementById("screen-native-img")?.remove(); } catch { /* ignore */ }
       return { open: false, peerId: "", mode: "full" };
     });
   }
@@ -6615,6 +6617,18 @@ function App() {
   }, [screenView.open, screenView.mode, screenWindowPos.inited]);
 
   useEffect(() => {
+    if (!screenView.open || !screenView.peerId) return undefined;
+    const pid = String(screenView.peerId);
+    const sharers = (voiceState.screenShareUserIds || []).map((x) => String(x));
+    if (sharers.includes(pid)) return undefined;
+    const timer = setTimeout(() => {
+      const still = (voiceStateRef.current?.screenShareUserIds || []).map((x) => String(x));
+      if (!still.includes(pid)) closeScreenView();
+    }, 1600);
+    return () => clearTimeout(timer);
+  }, [screenView.open, screenView.peerId, (voiceState.screenShareUserIds || []).join(",")]);
+
+  useEffect(() => {
     // Final safety net: if the stream track ends / disappears while overlay is open, close it.
     if (!screenView.open) return undefined;
     const pid = String(screenView.peerId || "");
@@ -6625,13 +6639,13 @@ function App() {
         if (!screenView.open) return;
         const native = typeof voiceRef.current?.isNativeScreenMode === "function" && voiceRef.current.isNativeScreenMode();
         if (native) {
-          const url = String(voiceRef.current?.getNativeScreenUrl?.(pid) || "");
-          if (!url) return;
           const v = screenVideoRef.current;
           if (v) {
             try { v.srcObject = null; } catch { /* ignore */ }
             v.style.display = "none";
           }
+          const url = String(voiceRef.current?.getNativeScreenUrl?.(pid) || "");
+          if (!url) return;
           let overlayImg = document.getElementById("screen-native-img") as HTMLImageElement | null;
           if (!overlayImg && screenOverlayRef.current) {
             overlayImg = document.createElement("img");
@@ -6640,7 +6654,7 @@ function App() {
             overlayImg.alt = "";
             screenOverlayRef.current.querySelector(".screen-surface")?.prepend(overlayImg);
           }
-          if (overlayImg && overlayImg.src !== url) overlayImg.src = url;
+          if (overlayImg) overlayImg.src = url;
           stoppedAt = 0;
           return;
         }
