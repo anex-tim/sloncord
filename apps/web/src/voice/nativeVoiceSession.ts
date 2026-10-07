@@ -156,6 +156,10 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       if (now - lastNativeUdpRefreshAt < 4000) return;
       void refreshNativeUdp().catch(() => {});
     },
+    onScreenFrame: (userId, jpegBase64) => {
+      if (!userId || !jpegBase64) return;
+      showRemoteFrame(String(userId), String(jpegBase64));
+    },
     onRoomRoster: (msg) => {
       const ids = Array.isArray(msg.userIds) ? msg.userIds.map((x) => String(x)) : [];
       lastRoster = ids;
@@ -352,7 +356,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
     }
 
     let frameBusy = false;
-    let jpegQuality = 0.62;
+    let jpegQuality = 0.5;
     screenCaptureTimer = setInterval(() => {
       if (frameBusy || !screenSharing || !screenVideoEl || !screenCanvas || !b?.sendNativeVideoFrame) return;
       const track = screenStream?.getVideoTracks?.()?.[0];
@@ -363,7 +367,7 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
       const vw = screenVideoEl.videoWidth;
       const vh = screenVideoEl.videoHeight;
       if (vw < 2 || vh < 2) return;
-      const scale = Math.min(1, 1280 / vw);
+      const scale = Math.min(1, 960 / vw);
       const w = Math.max(2, Math.round(vw * scale));
       const h = Math.max(2, Math.round(vh * scale));
       if (screenCanvas.width !== w) screenCanvas.width = w;
@@ -378,12 +382,13 @@ export function createNativeVoiceSession(opts: NativeVoiceSessionOptions) {
         dataUrl = screenCanvas.toDataURL("image/jpeg", jpegQuality);
         b64 = dataUrl.split(",")[1] || "";
       }
-      if (!b64 || b64.length > 220000) return;
+      if (!b64 || b64.length > 150000) return;
+      sendPresence({ type: "screenFrame", roomId: opts.roomId, payload: b64 });
       frameBusy = true;
       void Promise.resolve(b.sendNativeVideoFrame(b64)).finally(() => {
         frameBusy = false;
       });
-    }, 140);
+    }, 220);
   }
 
   return {

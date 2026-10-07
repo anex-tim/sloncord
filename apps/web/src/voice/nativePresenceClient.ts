@@ -8,6 +8,7 @@ export type NativePresenceClientOptions = {
   voiceFsm: VoiceSessionStateApi;
   onForceLeave: () => void;
   onRoomRoster: (msg: Record<string, unknown>) => void;
+  onScreenFrame?: (userId: string, jpegBase64: string) => void;
   onVoiceMove?: (channelId: string) => void;
   onNativeReady: () => void;
   onReconnectSuccess: () => void;
@@ -89,6 +90,10 @@ export function createNativePresenceClient(opts: NativePresenceClientOptions): N
     }
     if (msg.type === "roomRoster") {
       opts.onRoomRoster(msg);
+      return;
+    }
+    if (msg.type === "screenFrame" && msg.userId && msg.jpeg) {
+      opts.onScreenFrame?.(String(msg.userId), String(msg.jpeg));
     }
   }
 

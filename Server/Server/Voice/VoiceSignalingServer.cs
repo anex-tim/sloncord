@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -20,6 +21,7 @@ internal sealed class VoiceSignalingServer
     private readonly Dictionary<string, DateTime> _roomStartedAtUtc = new();
     private readonly Dictionary<WebSocket, (Guid UserId, string RoomId)> _socketMap = new();
     private readonly Dictionary<WebSocket, string> _socketMode = new();
+    private readonly ConcurrentDictionary<WebSocket, SemaphoreSlim> _sendLocks = new();
     private readonly SloncordRealtime _realtime;
     private readonly VoiceGatewayService _gateway;
     private readonly VoiceSessionRegistry _sessions;
@@ -197,6 +199,12 @@ internal sealed class VoiceSignalingServer
                         if (string.IsNullOrWhiteSpace(msg.RoomId)) continue;
                         if (msg.Enabled is null) continue;
                         UpdateScreenShare(userId, msg.RoomId, msg.Enabled.Value, ct);
+                    }
+                    else if (msg.Type == "screenFrame")
+                    {
+                        if (string.IsNullOrWhiteSpace(msg.RoomId) || string.IsNullOrWhiteSpace(msg.Payload)) continue;
+                        if (msg.Payload.Length > 160_000) continue;
+                        await RelayScreenFrameAsync(userId, msg.RoomId, msg.Payload, socket, ct);
                     }
                     else if (msg.Type == "setUserFlags")
                     {
@@ -936,18 +944,54 @@ internal sealed class VoiceSignalingServer
             _ = SendJsonAsync(ws, payload, CancellationToken.None);
     }
 
-    private static async Task SendJsonAsync(WebSocket socket, object payload, CancellationToken ct)
+    private async Task RelayScreenFrameAsync(Guid userId, string roomId, string jpeg, WebSocket from, CancellationToken ct)
+    {
+        List<WebSocket> targets;
+        lock (_sync)
+        {
+            if (!_rooms.TryGetValue(roomId, out var room)) return;
+            targets = new List<WebSocket>();
+            foreach (var set in room.Values)
+            {
+                foreach (var peer in set)
+                {
+                    if (ReferenceEquals(peer, from)) continue;
+                    if (peer.State == WebSocketState.Open) targets.Add(peer);
+                }
+            }
+        }
+        if (targets.Count == 0) return;
+        var msg = new { type = "screenFrame", userId = userId.ToString("D"), jpeg };
+        foreach (var peer in targets)
+            await SendJsonAsync(peer, msg, ct);
+    }
+
+    private async Task SendJsonAsync(WebSocket socket, object payload, CancellationToken ct)
     {
         if (socket.State != WebSocketState.Open) return;
-        var json = JsonSerializer.Serialize(payload, SloncordJson.Options);
-        var bytes = Encoding.UTF8.GetBytes(json);
+        var gate = _sendLocks.GetOrAdd(socket, _ => new SemaphoreSlim(1, 1));
         try
         {
+            await gate.WaitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        try
+        {
+            if (socket.State != WebSocketState.Open) return;
+            var json = JsonSerializer.Serialize(payload, SloncordJson.Options);
+            var bytes = Encoding.UTF8.GetBytes(json);
             await socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, cancellationToken: ct);
         }
         catch
         {
             // ignore
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 

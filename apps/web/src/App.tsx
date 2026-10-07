@@ -6619,14 +6619,18 @@ function App() {
   useEffect(() => {
     if (!screenView.open || !screenView.peerId) return undefined;
     const pid = String(screenView.peerId);
-    const sharers = (voiceState.screenShareUserIds || []).map((x) => String(x));
-    if (sharers.includes(pid)) return undefined;
+    const ch = String(activeVoiceChannelId || "");
+    const fromPresence = (voicePresenceByChannelId[ch]?.screenShareUserIds || []).map((x) => String(x));
+    const fromVoice = (voiceState.screenShareUserIds || []).map((x) => String(x));
+    if (fromPresence.includes(pid) || fromVoice.includes(pid)) return undefined;
     const timer = setTimeout(() => {
-      const still = (voiceStateRef.current?.screenShareUserIds || []).map((x) => String(x));
-      if (!still.includes(pid)) closeScreenView();
-    }, 1600);
+      const chNow = String(activeVoiceChannelIdRef.current || "");
+      const presenceNow = (voicePresenceByChannelId[chNow]?.screenShareUserIds || []).map((x) => String(x));
+      const voiceNow = (voiceStateRef.current?.screenShareUserIds || []).map((x) => String(x));
+      if (!presenceNow.includes(pid) && !voiceNow.includes(pid)) closeScreenView();
+    }, 2500);
     return () => clearTimeout(timer);
-  }, [screenView.open, screenView.peerId, (voiceState.screenShareUserIds || []).join(",")]);
+  }, [screenView.open, screenView.peerId, activeVoiceChannelId, voicePresenceByChannelId, (voiceState.screenShareUserIds || []).join(",")]);
 
   useEffect(() => {
     // Final safety net: if the stream track ends / disappears while overlay is open, close it.
