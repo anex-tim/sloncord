@@ -12,6 +12,26 @@ using NAudio.Wasapi;
 
 namespace SloncordNativeVoice;
 
+/// <summary>
+/// MixingSampleProvider удаляет вход, если Read вернул 0. BufferedWaveProvider так делает,
+/// когда в буфере нет данных, поэтому без этой обёртки голос замолкает сразу после входа.
+/// </summary>
+internal sealed class NeverEndSampleProvider : ISampleProvider
+{
+    private readonly ISampleProvider _source;
+
+    public NeverEndSampleProvider(ISampleProvider source) => _source = source;
+
+    public WaveFormat WaveFormat => _source.WaveFormat;
+
+    public int Read(float[] buffer, int offset, int count)
+    {
+        var read = _source.Read(buffer, offset, count);
+        if (read < count) Array.Clear(buffer, offset + read, count - read);
+        return count;
+    }
+}
+
 internal static class VoiceProtocol
 {
     public const uint Magic = 0x534C4E56;
@@ -273,8 +293,10 @@ internal sealed class VoiceRuntime
             DiscardOnBufferOverflow = true
         };
         var mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(48000, 1)) { ReadFully = true };
-        mixer.AddMixerInput(_playBuffer.ToSampleProvider());
-        mixer.AddMixerInput(_screenPlayBuffer.ToSampleProvider());
+        // MixingSampleProvider выкидывает источник, который хоть раз отдал 0 сэмплов.
+        // Буфер голоса в начале пустой — без обёртки дорожка пропадает навсегда.
+        mixer.AddMixerInput(new NeverEndSampleProvider(_playBuffer.ToSampleProvider()));
+        mixer.AddMixerInput(new NeverEndSampleProvider(_screenPlayBuffer.ToSampleProvider()));
         _outputProvider = new SampleToWaveProvider16(mixer);
         _waveOut = CreateOutputDevice(_outputDeviceId);
         try
