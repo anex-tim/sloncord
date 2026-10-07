@@ -5,6 +5,9 @@
 #include <inspectable.h>
 #include <avrt.h>
 #include <propvarutil.h>
+#include <audiopolicy.h>
+#include <tlhelp32.h>
+#include <wctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string>
@@ -607,6 +610,195 @@ static void subtract_from_acc(std::vector<int32_t>& acc, UINT32 frames, Subtract
   for (size_t i = 0; i < samples; i++) acc[i] -= (int32_t)st.lastStereo[i];
 }
 
+// ---- apps mode: каждый процесс со звуком (кроме Sloncord) отдельным include-захватом ----
+// Exclude дерева Sloncord глушит и чужие программы, если они запущены из Sloncord
+// (например, браузер, открытый по ссылке из чата), поэтому не опираемся на дерево процессов.
+
+static std::wstring process_image_name(DWORD pid) {
+  std::wstring name;
+  HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (!h) return name;
+  wchar_t buf[MAX_PATH * 2];
+  DWORD len = (DWORD)(sizeof(buf) / sizeof(buf[0]));
+  if (QueryFullProcessImageNameW(h, 0, buf, &len)) {
+    name.assign(buf, len);
+    size_t slash = name.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) name = name.substr(slash + 1);
+    for (auto& ch : name) ch = (wchar_t)towlower(ch);
+  }
+  CloseHandle(h);
+  return name;
+}
+
+static bool is_sloncord_image(const std::wstring& n) {
+  return n == L"sloncord.exe" || n == L"sloncordnativevoice.exe" || n == L"sloncordwinaudiohelper.exe";
+}
+
+static std::set<DWORD> ancestors_of(DWORD pid) {
+  std::set<DWORD> out;
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snap == INVALID_HANDLE_VALUE) return out;
+  std::vector<std::pair<DWORD, DWORD>> pairs;
+  PROCESSENTRY32W pe;
+  pe.dwSize = sizeof(pe);
+  if (Process32FirstW(snap, &pe)) {
+    do { pairs.emplace_back(pe.th32ProcessID, pe.th32ParentProcessID); } while (Process32NextW(snap, &pe));
+  }
+  CloseHandle(snap);
+  DWORD cur = pid;
+  for (int depth = 0; depth < 32; depth++) {
+    DWORD parent = 0;
+    for (auto& p : pairs) if (p.first == cur) { parent = p.second; break; }
+    if (!parent || out.count(parent)) break;
+    out.insert(parent);
+    cur = parent;
+  }
+  return out;
+}
+
+static std::set<DWORD> audio_session_pids() {
+  std::set<DWORD> pids;
+  IMMDeviceEnumerator* en = nullptr;
+  if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&en)) || !en)
+    return pids;
+  IMMDeviceCollection* col = nullptr;
+  if (SUCCEEDED(en->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col)) && col) {
+    UINT count = 0;
+    col->GetCount(&count);
+    for (UINT i = 0; i < count; i++) {
+      IMMDevice* dev = nullptr;
+      if (FAILED(col->Item(i, &dev)) || !dev) continue;
+      IAudioSessionManager2* mgr = nullptr;
+      if (SUCCEEDED(dev->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr, (void**)&mgr)) && mgr) {
+        IAudioSessionEnumerator* se = nullptr;
+        if (SUCCEEDED(mgr->GetSessionEnumerator(&se)) && se) {
+          int n = 0;
+          se->GetCount(&n);
+          for (int k = 0; k < n; k++) {
+            IAudioSessionControl* ctl = nullptr;
+            if (FAILED(se->GetSession(k, &ctl)) || !ctl) continue;
+            IAudioSessionControl2* ctl2 = nullptr;
+            if (SUCCEEDED(ctl->QueryInterface(__uuidof(IAudioSessionControl2), (void**)&ctl2)) && ctl2) {
+              AudioSessionState st = AudioSessionStateInactive;
+              ctl2->GetState(&st);
+              DWORD pid = 0;
+              if (st != AudioSessionStateExpired && ctl2->IsSystemSoundsSession() != S_OK
+                  && SUCCEEDED(ctl2->GetProcessId(&pid)) && pid)
+                pids.insert(pid);
+              ctl2->Release();
+            }
+            ctl->Release();
+          }
+          se->Release();
+        }
+        mgr->Release();
+      }
+      dev->Release();
+    }
+    col->Release();
+  }
+  en->Release();
+  return pids;
+}
+
+struct AppSource {
+  DWORD pid = 0;
+  Capture cap;
+  std::vector<int16_t> ring; // s16 stereo interleaved
+};
+
+static void drain_source(AppSource& s) {
+  if (!s.cap.cap) return;
+  while (true) {
+    UINT32 packet = 0;
+    if (FAILED(s.cap.cap->GetNextPacketSize(&packet)) || packet == 0) break;
+    BYTE* data = nullptr;
+    UINT32 frames = 0;
+    DWORD flags = 0;
+    if (FAILED(s.cap.cap->GetBuffer(&data, &frames, &flags, nullptr, nullptr))) break;
+    std::vector<int16_t> tmp;
+    convert_to_s16_stereo_vec(tmp, s.cap.wf, data, frames, (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0);
+    s.cap.cap->ReleaseBuffer(frames);
+    s.ring.insert(s.ring.end(), tmp.begin(), tmp.end());
+  }
+  // Не копим задержку: держим не больше ~120 мс на источник.
+  const size_t cap = 48000 / 1000 * 120 * 2;
+  if (s.ring.size() > cap) s.ring.erase(s.ring.begin(), s.ring.begin() + (s.ring.size() - cap));
+}
+
+static void rescan_sources(std::vector<AppSource>& sources, std::set<DWORD>& skip) {
+  for (DWORD pid : audio_session_pids()) {
+    if (skip.count(pid)) continue;
+    bool have = false;
+    for (auto& s : sources) if (s.pid == pid) { have = true; break; }
+    if (have || sources.size() >= 24) continue;
+    if (is_sloncord_image(process_image_name(pid))) { skip.insert(pid); continue; }
+    // Include захватывает дерево процесса: если предок уже пишется, потомка не добавляем (иначе звук удвоится).
+    const std::set<DWORD> anc = ancestors_of(pid);
+    bool coveredByParent = false;
+    for (auto& s : sources) if (anc.count(s.pid)) { coveredByParent = true; break; }
+    if (coveredByParent) { skip.insert(pid); continue; }
+    AppSource src;
+    src.pid = pid;
+    if (!init_process_loopback_include(pid, src.cap)) { skip.insert(pid); continue; }
+    if (FAILED(src.cap.ac->Start())) { capture_close(src.cap); skip.insert(pid); continue; }
+    for (size_t i = 0; i < sources.size();) {
+      if (ancestors_of(sources[i].pid).count(pid)) {
+        capture_close(sources[i].cap);
+        sources.erase(sources.begin() + (ptrdiff_t)i);
+      } else {
+        i++;
+      }
+    }
+    fprintf(stderr, "sloncord-audio app pid=%lu %ls\n", (unsigned long)pid, process_image_name(pid).c_str());
+    sources.push_back(std::move(src));
+  }
+}
+
+static int run_apps_mode(HANDLE pipe, DWORD sloncordPid) {
+  std::set<DWORD> skip = ancestors_of(sloncordPid);
+  skip.insert(sloncordPid);
+  skip.insert(GetCurrentProcessId());
+  std::vector<AppSource> sources;
+  rescan_sources(sources, skip);
+  fprintf(stderr, "sloncord-audio apps=%zu\n", sources.size());
+  fflush(stderr);
+
+  const size_t chunkSamples = 480 * 2; // 10 мс стерео
+  std::vector<int32_t> acc(chunkSamples);
+  std::vector<int16_t> out(chunkSamples);
+  ULONGLONG lastScan = GetTickCount64();
+  ULONGLONG started = GetTickCount64();
+  ULONGLONG emitted = 0; // кадров
+  while (true) {
+    Sleep(5);
+    if (GetTickCount64() - lastScan > 1000) {
+      lastScan = GetTickCount64();
+      rescan_sources(sources, skip);
+    }
+    for (auto& s : sources) drain_source(s);
+    // Тактируемся от часов, а не от источников: если ничего не играет, шлём тишину.
+    const ULONGLONG due = (GetTickCount64() - started) * 48;
+    while (emitted + 480 <= due) {
+      std::fill(acc.begin(), acc.end(), 0);
+      for (auto& s : sources) {
+        const size_t n = s.ring.size() < chunkSamples ? s.ring.size() : chunkSamples;
+        for (size_t i = 0; i < n; i++) acc[i] += s.ring[i];
+        s.ring.erase(s.ring.begin(), s.ring.begin() + n);
+      }
+      clamp_to_s16(out.data(), acc);
+      const uint32_t bytes = (uint32_t)(chunkSamples * 2);
+      DWORD w1 = 0, w2 = 0;
+      if (!WriteFile(pipe, &bytes, sizeof(bytes), &w1, nullptr)) goto done;
+      if (!WriteFile(pipe, out.data(), bytes, &w2, nullptr)) goto done;
+      emitted += 480;
+    }
+  }
+done:
+  for (auto& s : sources) capture_close(s.cap);
+  return 0;
+}
+
 int main(int argc, char** argv) {
   Args a = parse_args(argc, argv);
   if (a.pipeName.empty() || a.mode.empty()) return 2;
@@ -635,6 +827,14 @@ int main(int argc, char** argv) {
 
   Capture mainCap;
   std::vector<SubtractState> subtractStates;
+
+  if (a.mode == "apps") {
+    int rc = run_apps_mode(pipe, a.excludeTargetPid);
+    if (avrt) AvRevertMmThreadCharacteristics(avrt);
+    CoUninitialize();
+    CloseHandle(pipe);
+    return rc;
+  }
 
   if (a.mode == "system") {
     IMMDeviceEnumerator* enumerator = nullptr;

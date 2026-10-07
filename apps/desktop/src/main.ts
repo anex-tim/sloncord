@@ -1124,8 +1124,9 @@ ipcMain.handle(
         excludeRootPid: number
       ) {
         const pipe = `\\\\.\\pipe\\sloncord-audio-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
-        // Исключаем дерево Sloncord: в дорожку попадает звук системы, но не сам голосовой чат.
-        const args: string[] = ["--pipe", pipe, "--mode", "screen", "--excludeTargetPid", String(excludeRootPid || process.pid)];
+        // Пишем каждую программу со звуком, кроме процессов Sloncord. Exclude всего дерева Sloncord
+        // глушил и браузер, запущенный по ссылке из чата, и зритель получал тишину.
+        const args: string[] = ["--pipe", pipe, "--mode", "apps", "--excludeTargetPid", String(excludeRootPid || process.pid)];
         void mode;
         const proc = spawn(helperPath, args, { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
         let helperErr = "";
