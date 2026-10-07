@@ -73,33 +73,98 @@ struct Capture {
   HANDLE evt = nullptr;
 };
 
-static bool init_loopback_default(IMMDevice* device, Capture& result) {
-  IAudioClient* ac = nullptr;
-  HRESULT hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&ac);
-  if (FAILED(hr) || !ac) return false;
-  WAVEFORMATEX* mix = nullptr;
-  hr = ac->GetMixFormat(&mix);
-  if (FAILED(hr) || !mix) { ac->Release(); return false; }
+static void log_hr(const char* step, HRESULT hr);
+static WAVEFORMATEX* alloc_pcm16_stereo_48k();
 
-  const REFERENCE_TIME hnsBufferDuration = 20 * 10000;
-  DWORD flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
-  hr = ac->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, hnsBufferDuration, 0, mix, nullptr);
-  if (FAILED(hr)) { CoTaskMemFree(mix); ac->Release(); return false; }
-
-  HANDLE evt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-  if (!evt) { CoTaskMemFree(mix); ac->Release(); return false; }
-  hr = ac->SetEventHandle(evt);
-  if (FAILED(hr)) { CloseHandle(evt); CoTaskMemFree(mix); ac->Release(); return false; }
-
+static bool finish_loopback_client(IAudioClient* ac, WAVEFORMATEX* mix, bool useEvent, Capture& result) {
+  HANDLE evt = nullptr;
+  if (useEvent) {
+    evt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!evt) return false;
+    HRESULT hr = ac->SetEventHandle(evt);
+    if (FAILED(hr)) {
+      CloseHandle(evt);
+      log_hr("loopback.SetEventHandle", hr);
+      return false;
+    }
+  }
   IAudioCaptureClient* cap = nullptr;
-  hr = ac->GetService(__uuidof(IAudioCaptureClient), (void**)&cap);
-  if (FAILED(hr) || !cap) { CloseHandle(evt); CoTaskMemFree(mix); ac->Release(); return false; }
-
+  HRESULT hr = ac->GetService(__uuidof(IAudioCaptureClient), (void**)&cap);
+  if (FAILED(hr) || !cap) {
+    if (evt) CloseHandle(evt);
+    log_hr("loopback.GetService", FAILED(hr) ? hr : E_FAIL);
+    return false;
+  }
   result.ac = ac;
   result.cap = cap;
   result.wf = mix;
   result.evt = evt;
   return true;
+}
+
+static bool init_loopback_default(IMMDevice* device, Capture& result) {
+  struct Attempt {
+    const char* name;
+    DWORD flags;
+    REFERENCE_TIME dur;
+    bool fixedPcm;
+    bool useEvent;
+  };
+  const Attempt attempts[] = {
+    { "mix-evt-20ms", AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 20 * 10000, false, true },
+    { "mix-evt-0", AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 0, false, true },
+    { "mix-poll-20ms", AUDCLNT_STREAMFLAGS_LOOPBACK, 20 * 10000, false, false },
+    { "pcm-evt-0", AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, 0, true, true },
+  };
+
+  for (const Attempt& a : attempts) {
+    IAudioClient* ac = nullptr;
+    HRESULT hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&ac);
+    if (FAILED(hr) || !ac) {
+      log_hr("loopback.Activate", FAILED(hr) ? hr : E_FAIL);
+      return false;
+    }
+    WAVEFORMATEX* mix = nullptr;
+    if (a.fixedPcm) {
+      mix = alloc_pcm16_stereo_48k();
+    } else {
+      hr = ac->GetMixFormat(&mix);
+    }
+    if (!mix) {
+      ac->Release();
+      continue;
+    }
+    hr = ac->Initialize(AUDCLNT_SHAREMODE_SHARED, a.flags, a.dur, 0, mix, nullptr);
+    if (hr == 0x88890019 /* AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED */) {
+      REFERENCE_TIME defPeriod = 0, minPeriod = 0;
+      REFERENCE_TIME aligned = 0;
+      if (SUCCEEDED(ac->GetDevicePeriod(&defPeriod, &minPeriod)) && defPeriod > 0) aligned = defPeriod;
+      ac->Release();
+      CoTaskMemFree(mix);
+      if (aligned <= 0) continue;
+      hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&ac);
+      if (FAILED(hr) || !ac) continue;
+      mix = a.fixedPcm ? alloc_pcm16_stereo_48k() : nullptr;
+      if (!a.fixedPcm) {
+        if (FAILED(ac->GetMixFormat(&mix)) || !mix) { ac->Release(); continue; }
+      }
+      hr = ac->Initialize(AUDCLNT_SHAREMODE_SHARED, a.flags, aligned, 0, mix, nullptr);
+    }
+    if (FAILED(hr)) {
+      log_hr(a.name, hr);
+      CoTaskMemFree(mix);
+      ac->Release();
+      continue;
+    }
+    if (!finish_loopback_client(ac, mix, a.useEvent, result)) {
+      CoTaskMemFree(mix);
+      ac->Release();
+      continue;
+    }
+    fprintf(stderr, "sloncord-audio system=%s\n", a.name);
+    return true;
+  }
+  return false;
 }
 
 static void capture_close(Capture& c) {

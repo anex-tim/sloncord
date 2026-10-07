@@ -1129,9 +1129,15 @@ ipcMain.handle(
         const args: string[] = ["--pipe", pipe, "--mode", "system"];
         void mode;
         void excludeRootPid;
-        const proc = spawn(helperPath, args, { windowsHide: true, stdio: "ignore" });
+        const proc = spawn(helperPath, args, { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
+        let helperErr = "";
+        proc.stderr?.setEncoding("utf8");
+        proc.stderr?.on("data", (d: string) => {
+          helperErr += d;
+          if (helperErr.length > 800) helperErr = helperErr.slice(-800);
+        });
         const reader = await connectNamedPipeReadStream(pipe);
-        return { proc, reader, pipe };
+        return { proc, reader, pipe, helperErr: () => helperErr };
       }
 
       async function tryStartScreenCapture(): Promise<{
@@ -1143,7 +1149,8 @@ ipcMain.handle(
         // Вычитание полного микса не используем: из-за рассинхрона зритель слышал сам себя.
         const excludeRootPid = process.pid;
         const started = await spawnScreenAudioHelper("exclude-tree", excludeRootPid);
-        if (await helperProcessFailedQuickly(started.proc, 450)) {
+        if (await helperProcessFailedQuickly(started.proc, 1200)) {
+          const detail = started.helperErr().replace(/\s+/g, " ").trim();
           try {
             started.reader.destroy();
           } catch {
@@ -1155,7 +1162,9 @@ ipcMain.handle(
             /* ignore */
           }
           throw new Error(
-            "Не удалось захватить системный звук без звука Sloncord. Демонстрация продолжится без системного звука."
+            detail
+              ? `Не удалось начать захват системного звука (${detail}).`
+              : "Не удалось начать захват системного звука. Демонстрация продолжится без него."
           );
         }
         return { started, captureMode: "exclude-tree", excludeRootPid };
